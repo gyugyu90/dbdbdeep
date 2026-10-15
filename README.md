@@ -6,11 +6,18 @@ A cheerful macOS app for exploring Oracle databases, running SQL, and keeping yo
 
 ## Get started
 
-Build from source before launching the app. You'll need:
+1. Download the [DMG for Apple Silicon](https://github.com/gyugyu90/dbdbdeep/releases/download/v0.1.0/dbdbdeep-0.1.0-macos-arm64.dmg) from [GitHub Releases](https://github.com/gyugyu90/dbdbdeep/releases/latest).
+2. Open the DMG and drag **dbdbdeep.app** into **Applications**.
+3. Open dbdbdeep from Applications, then eject the disk image.
 
-- macOS 14 or later.
-- Xcode or Command Line Tools with Swift 5.10 or later.
-- JDK 21, discoverable by `/usr/libexec/java_home -v 21`, and internet access for the first build.
+Requires **macOS 14 or later** on an **Apple Silicon Mac**. Java and the Oracle drivers are included. This early build is locally signed and has not been notarized by Apple.
+
+Your first launch opens **Little playground**, with sample tables ready to explore.
+
+<details>
+<summary>Build from source instead</summary>
+
+You'll need macOS 14+, Xcode or Command Line Tools with Swift 5.10+, JDK 21 discoverable by `/usr/libexec/java_home -v 21`, and internet access for the first build.
 
 ```sh
 git clone https://github.com/gyugyu90/dbdbdeep.git
@@ -19,9 +26,7 @@ cd dbdbdeep
 open build/dbdbdeep.app
 ```
 
-After building, you can also open `build/dbdbdeep.app` from Finder. Java and the Oracle drivers are bundled automatically, so no separate Java installation is needed to run the built app.
-
-Your first launch opens **Little playground**, with sample tables ready to explore.
+</details>
 
 ## Connect to Oracle
 
