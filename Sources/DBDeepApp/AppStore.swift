@@ -17,6 +17,9 @@ final class AppStore: ObservableObject {
     @Published var status = "Ready when you are"
     @Published var showConnection = false
     @Published var editingConnection: DBConnection?
+    @Published var connectionAttempts: [UUID: ConnectionAttempt] = [:]
+    @Published var diagnosticConnectionID: UUID?
+    @Published var showConnectionDetails = false
     @Published var showBookmark = false
     @Published var editingBookmark: QueryBookmark?
     @Published var schemaSearch = ""
@@ -43,7 +46,8 @@ final class AppStore: ObservableObject {
     }
 
     init(directory: URL? = nil) {
-        self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("DBDeep")
+        let workspaceName = Bundle.main.bundleIdentifier == "studio.dbdbdeep.preview" ? "DBDeep Preview" : "DBDeep"
+        self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(workspaceName)
         do {
             try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
             let file = self.directory.appendingPathComponent("workspace.json")
@@ -89,10 +93,49 @@ final class AppStore: ObservableObject {
         if target.kind == .sample && !connectedIDs.contains(target.id) { Task { await connect(target) } }
     }
 
-    func connect(_ target: DBConnection, password: String? = nil) async {
+    private func beginAttempt(_ target: DBConnection, purpose: String, savedPassword: Bool) -> UUID {
+        var attempt = ConnectionAttempt(connection: target, purpose: purpose)
+        attempt.record(ConnectionEvent(stage: .credentials, message: savedPassword ? "macOS Keychain에서 저장된 비밀번호를 읽습니다." : "입력한 비밀번호를 사용합니다. 로그에는 포함하지 않습니다."))
+        connectionAttempts[target.id] = attempt
+        return attempt.id
+    }
+
+    private func record(_ event: ConnectionEvent, connectionID: UUID, attemptID: UUID) {
+        guard connectionAttempts[connectionID]?.id == attemptID else { return }
+        connectionAttempts[connectionID]?.record(event)
+    }
+
+    private func finishFailure(_ error: Error, target: DBConnection, attemptID: UUID) {
+        guard let attempt = connectionAttempts[target.id], attempt.id == attemptID else { return }
+        let failure = error as? OracleConnectionFailure ?? OracleConnectionFailure(message: error.localizedDescription, stage: attempt.events.last?.stage)
+        record(ConnectionEvent(stage: failure.stage ?? .connecting, level: .error, message: failure.message), connectionID: target.id, attemptID: attemptID)
+        connectionAttempts[target.id]?.finish(.failed, failure: failure)
+    }
+
+    func testConnection(_ target: DBConnection, password: String) async {
         guard !isBusy else { return }
+        isBusy = true
+        defer { isBusy = false }
+        let attemptID = beginAttempt(target, purpose: "Test connection", savedPassword: password.isEmpty)
+        do {
+            let secret = try password.isEmpty ? PasswordKeychain.read(for: target.id) : password
+            record(ConnectionEvent(stage: .credentials, level: .success, message: "접속 계정을 준비했습니다 · \(target.username)"), connectionID: target.id, attemptID: attemptID)
+            let database = OracleDatabase(connection: target, runtime: oracleRuntime)
+            try await database.connect(password: secret) { [weak self] event in
+                await self?.record(event, connectionID: target.id, attemptID: attemptID)
+            }
+            await database.disconnect()
+            record(ConnectionEvent(stage: .session, level: .success, message: "테스트 세션을 닫았습니다. 데이터 변경은 없습니다."), connectionID: target.id, attemptID: attemptID)
+            connectionAttempts[target.id]?.finish(.succeeded)
+        } catch { finishFailure(error, target: target, attemptID: attemptID) }
+    }
+
+    @discardableResult
+    func connect(_ target: DBConnection, password: String? = nil) async -> Bool {
+        guard !isBusy else { return false }
         isBusy = true; error = nil; status = "Connecting…"
         defer { isBusy = false }
+        var attemptID: UUID?
         do {
             if target.kind == .sample {
                 if sqlite == nil {
@@ -102,16 +145,39 @@ final class AppStore: ObservableObject {
                     sqlite = database
                 }
             } else {
+                let identifier = beginAttempt(target, purpose: "Connect", savedPassword: password == nil)
+                attemptID = identifier
                 let secret = try password ?? PasswordKeychain.read(for: target.id)
+                record(ConnectionEvent(stage: .credentials, level: .success, message: "접속 계정을 준비했습니다 · \(target.username)"), connectionID: target.id, attemptID: identifier)
                 let database = OracleDatabase(connection: target, runtime: oracleRuntime)
-                try await database.connect(password: secret)
+                try await database.connect(password: secret) { [weak self] event in
+                    await self?.record(event, connectionID: target.id, attemptID: identifier)
+                }
                 oracle[target.id] = database
             }
             connectedIDs.insert(target.id)
             status = "Connected · \(target.name)"
-            do { try await loadSchema(target) }
-            catch { self.error = "연결되었습니다. 스키마를 불러올 수 없습니다: \(error.localizedDescription)" }
-        } catch { self.error = error.localizedDescription; status = "Connection failed" }
+            if let attemptID { record(ConnectionEvent(stage: .schema, message: "현재 계정의 테이블·뷰·컬럼을 조회합니다."), connectionID: target.id, attemptID: attemptID) }
+            do {
+                try await loadSchema(target)
+                if let attemptID {
+                    record(ConnectionEvent(stage: .schema, level: .success, message: "스키마를 불러왔습니다 · \(schemaByConnection[target.id]?.count ?? 0) tables / views"), connectionID: target.id, attemptID: attemptID)
+                    connectionAttempts[target.id]?.finish(.succeeded)
+                }
+            } catch {
+                self.error = "연결되었습니다. 스키마를 불러올 수 없습니다: \(error.localizedDescription)"
+                if let attemptID {
+                    let failure = OracleConnectionFailure(message: error.localizedDescription, stage: .schema)
+                    record(ConnectionEvent(stage: .schema, level: .warning, message: failure.message), connectionID: target.id, attemptID: attemptID)
+                    connectionAttempts[target.id]?.finish(.partial, failure: failure)
+                }
+            }
+            return true
+        } catch {
+            if let attemptID { finishFailure(error, target: target, attemptID: attemptID) }
+            self.error = error.localizedDescription; status = "Connection failed"
+            return false
+        }
     }
 
     func saveConnection(_ target: DBConnection, password: String) async -> Bool {
@@ -126,10 +192,15 @@ final class AppStore: ObservableObject {
             else { connections.append(target) }
             select(target)
             persist()
-            showConnection = false
-            await connect(target, password: password.isEmpty ? nil : password)
-            return true
-        } catch { self.error = error.localizedDescription; return false }
+            let connected = await connect(target, password: password.isEmpty ? nil : password)
+            if connected && connectionAttempts[target.id]?.outcome == .succeeded { showConnection = false }
+            return connected
+        } catch {
+            let attemptID = beginAttempt(target, purpose: "Save & connect", savedPassword: password.isEmpty)
+            finishFailure(error, target: target, attemptID: attemptID)
+            self.error = error.localizedDescription
+            return false
+        }
     }
 
     func removeConnection(_ target: DBConnection) async {

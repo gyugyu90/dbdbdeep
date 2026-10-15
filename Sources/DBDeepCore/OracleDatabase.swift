@@ -1,34 +1,78 @@
 import Foundation
 
+public typealias ConnectionEventHandler = @Sendable (ConnectionEvent) async -> Void
+
+private final class ProcessErrorBuffer: @unchecked Sendable {
+    private let lock = NSLock()
+    private var data = Data()
+
+    func append(_ chunk: Data) {
+        lock.lock()
+        defer { lock.unlock() }
+        data.append(chunk.prefix(max(0, 8192 - data.count)))
+    }
+
+    var text: String {
+        lock.lock()
+        defer { lock.unlock() }
+        return String(decoding: data, as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 private final class OracleSession {
     let process = Process()
     let input = Pipe()
     let output = Pipe()
+    private let errors = Pipe()
+    private let errorBuffer = ProcessErrorBuffer()
 
-    init(connection: DBConnection, password: String, runtime: URL) throws {
-        process.executableURL = runtime.appendingPathComponent("jre/bin/java")
-        let classpath = runtime.appendingPathComponent("classes").path + ":" + runtime.appendingPathComponent("ojdbc11.jar").path
-        process.arguments = ["-Djava.awt.headless=true", "-cp", classpath, "OracleBridge"]
+    private init(connection: DBConnection, runtime: URL) throws {
+        let java = runtime.appendingPathComponent("jre/bin/java")
+        let classes = runtime.appendingPathComponent("classes")
+        guard FileManager.default.isExecutableFile(atPath: java.path),
+              FileManager.default.fileExists(atPath: classes.appendingPathComponent("OracleBridge.class").path) else {
+            throw OracleConnectionFailure(message: "Oracle 런타임 파일이 없습니다. scripts/build-app.sh로 앱을 다시 빌드해 주세요.", details: ["Runtime: \(runtime.path)"], stage: .runtime)
+        }
+        let libraries = OracleDriverLibraries.resolve(connection: connection, runtime: runtime)
+        try OracleDriverLibraries.validate(libraries)
+        process.executableURL = java
+        process.arguments = ["-Djava.awt.headless=true", "-cp", ([classes.path] + libraries.map(\.path)).joined(separator: ":"), "OracleBridge"]
         process.standardInput = input
         process.standardOutput = output
-        process.standardError = FileHandle.nullDevice
-        guard FileManager.default.isExecutableFile(atPath: process.executableURL!.path) else {
-            throw DatabaseError("Oracle 런타임이 없습니다. scripts/build-app.sh로 앱을 빌드해 주세요.")
+        process.standardError = errors
+        let buffer = errorBuffer
+        errors.fileHandleForReading.readabilityHandler = { handle in
+            let data = handle.availableData
+            if data.isEmpty { handle.readabilityHandler = nil }
+            else { buffer.append(data) }
         }
         try process.run()
-        let address = connection.usesSID
-            ? "jdbc:oracle:thin:@\(connection.host):\(connection.port):\(connection.service)"
-            : "jdbc:oracle:thin:@//\(connection.host):\(connection.port)/\(connection.service)"
+    }
+
+    static func open(connection: DBConnection, password: String, runtime: URL, onEvent: ConnectionEventHandler) async throws -> OracleSession {
+        await onEvent(ConnectionEvent(stage: .runtime, message: "번들 Oracle 런타임 확인 · \(runtime.path)"))
         do {
-            try send([address, connection.username, password])
-            _ = try receive()
-        } catch {
-            if process.isRunning { process.terminate() }
-            throw error
+            let session = try OracleSession(connection: connection, runtime: runtime)
+            await onEvent(ConnectionEvent(stage: .runtime, level: .success, message: "Java 브리지 프로세스를 시작했습니다."))
+            let libraries = OracleDriverLibraries.resolve(connection: connection, runtime: runtime)
+            await onEvent(ConnectionEvent(stage: .driver, message: "사용하는 JAR 파일:\n" + libraries.map(\.path).joined(separator: "\n")))
+            try session.send([connection.jdbcURL, connection.username, password])
+            while true {
+                switch try session.receiveFrame() {
+                case .event(let event):
+                    await onEvent(ConnectionEvent(stage: event.stage, level: event.level, message: DiagnosticRedactor.redact(event.message, password: password), date: event.date))
+                case .failure(let failure): throw failure
+                case .result: return session
+                }
+            }
+        } catch let failure as OracleConnectionFailure { throw failure.redacted(password: password) }
+        catch {
+            throw OracleConnectionFailure(message: DiagnosticRedactor.redact(error.localizedDescription, password: password), stage: .runtime)
         }
     }
 
     deinit {
+        errors.fileHandleForReading.readabilityHandler = nil
         try? input.fileHandleForWriting.close()
         if process.isRunning { process.terminate() }
     }
@@ -47,26 +91,28 @@ private final class OracleSession {
         var data = Data()
         while data.count < count {
             guard let part = try output.fileHandleForReading.read(upToCount: count - data.count), !part.isEmpty else {
-                throw DatabaseError("Oracle 연결이 끊어졌습니다. 다시 연결해 주세요.")
+                let details = errorBuffer.text
+                throw OracleConnectionFailure(message: "Oracle 브리지의 응답이 종료되었습니다. \(details.isEmpty ? "연결 또는 런타임 상태를 확인해 주세요." : details)", stage: .runtime)
             }
             data.append(part)
         }
         return data
     }
 
-    private func receive() throws -> QueryResult {
+    private func receiveFrame() throws -> OracleBridgeFrame {
         let header = try readExactly(4)
         let size = header.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
         guard size <= 64_000_000 else { throw DatabaseError("Oracle 응답이 너무 큽니다.") }
-        let payload = try readExactly(Int(size))
-        struct Failure: Decodable { let error: String }
-        if let failure = try? JSONDecoder().decode(Failure.self, from: payload) { throw DatabaseError(failure.error) }
-        return try JSONDecoder().decode(QueryResult.self, from: payload)
+        return try OracleBridgeFrame.decode(readExactly(Int(size)))
     }
 
     func request(_ action: String, sql: String = "") throws -> QueryResult {
         try send([action, sql])
-        return try receive()
+        switch try receiveFrame() {
+        case .result(let result): return result
+        case .failure(let failure): throw failure
+        case .event: throw DatabaseError("예상하지 못한 Oracle 응답입니다. 앱을 다시 실행해 주세요.")
+        }
     }
 }
 
@@ -79,8 +125,8 @@ public actor OracleDatabase {
         self.connection = connection; self.runtime = runtime
     }
 
-    public func connect(password: String) throws {
-        session = try OracleSession(connection: connection, password: password, runtime: runtime)
+    public func connect(password: String, onEvent: @escaping ConnectionEventHandler = { _ in }) async throws {
+        session = try await OracleSession.open(connection: connection, password: password, runtime: runtime, onEvent: onEvent)
     }
 
     public func execute(_ sql: String) throws -> QueryResult {

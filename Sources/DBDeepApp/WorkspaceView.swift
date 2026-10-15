@@ -3,22 +3,31 @@ import DBDeepCore
 
 struct WorkspaceView: View {
     @EnvironmentObject var store: AppStore
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(spacing: 0) {
             titlebar
             Rectangle().fill(Theme.line).frame(height: 1)
-            HSplitView {
-                ConnectionSidebar().frame(minWidth: 210, idealWidth: 240, maxWidth: 285)
-                ConsoleView().frame(minWidth: 540, maxWidth: .infinity)
-                if store.showBookmarks { BookmarkSidebar().frame(minWidth: 250, idealWidth: 285, maxWidth: 310) }
+            GeometryReader { geometry in
+                HSplitView {
+                    ConnectionSidebar().frame(minWidth: 210, idealWidth: 240, maxWidth: max(210, geometry.size.width / 3))
+                    ConsoleView().frame(minWidth: 450, maxWidth: .infinity)
+                    if store.showBookmarks { BookmarkSidebar().frame(minWidth: 250, idealWidth: 285, maxWidth: 310) }
+                }
             }
             statusbar
         }
-        .foregroundStyle(Theme.ink).background(.white)
+        .foregroundStyle(Theme.ink).background(Theme.surface)
         .frame(minWidth: store.showBookmarks ? 1060 : 800, minHeight: 680)
-        .preferredColorScheme(.light).tint(Theme.purple)
+        .tint(Theme.purple)
+        .onChange(of: colorScheme, initial: true) { _, scheme in AppAppearance.updateIcon(for: scheme) }
         .sheet(isPresented: $store.showConnection) { ConnectionSheet(connection: store.editingConnection) }
+        .sheet(isPresented: $store.showConnectionDetails) {
+            if let connection = store.connections.first(where: { $0.id == store.diagnosticConnectionID }) {
+                ConnectionDetailsSheet(connection: connection)
+            }
+        }
         .sheet(isPresented: $store.showBookmark) { BookmarkSheet(bookmark: store.editingBookmark) }
         .onChange(of: store.query) { _, _ in store.queryChanged() }
         .task { await store.start() }
@@ -40,6 +49,7 @@ struct WorkspaceView: View {
         }
         .padding(.leading, 80).padding(.trailing, 20).frame(height: 56)
         .background(Theme.canvas)
+        .background(WindowTitlebar())
     }
 
     private var historyView: some View {
@@ -72,6 +82,10 @@ struct WorkspaceView: View {
             if store.connection?.kind == .sample { Text("Local playground").foregroundStyle(Theme.secondary) }
             Text("✦").foregroundStyle(Theme.purple).padding(.horizontal, 6)
             Text("Made for curious minds").foregroundStyle(Theme.secondary)
+            if let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String {
+                Text("·").foregroundStyle(Theme.secondary)
+                Text("v\(version)").font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.secondary)
+            }
         }.font(.system(size: 10)).padding(.horizontal, 18).frame(height: 28)
             .background(Theme.canvas).overlay(alignment: .top) { Rectangle().fill(Theme.line).frame(height: 1) }
     }
@@ -135,15 +149,6 @@ struct ConnectionSidebar: View {
                 Spacer()
             }
             Spacer(minLength: 8)
-            VStack(alignment: .leading, spacing: 9) {
-                HStack(spacing: 6) {
-                    Text("🌱").font(.system(size: 14))
-                    Text("A little room to explore").font(.system(size: 11, weight: .semibold))
-                }
-                Text("Try a query in the playground.\nGood ideas start with a little curiosity.")
-                    .font(.system(size: 10)).foregroundStyle(Theme.secondary).lineSpacing(4)
-            }.padding(13).frame(maxWidth: .infinity, alignment: .leading)
-                .background(Theme.tint("mint").opacity(0.6), in: RoundedRectangle(cornerRadius: 11)).padding(14)
         }.background(Theme.sidebar)
     }
 
@@ -165,12 +170,15 @@ struct ConnectionSidebar: View {
                 Spacer(minLength: 1)
                 if selected { Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.purple) }
             }.padding(.horizontal, 10).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
-                .background(selected ? .white : .clear, in: RoundedRectangle(cornerRadius: 9))
+                .background(selected ? Theme.surface : .clear, in: RoundedRectangle(cornerRadius: 9))
                 .overlay(RoundedRectangle(cornerRadius: 9).stroke(selected ? Theme.line : .clear, lineWidth: 1))
         }.buttonStyle(.plain).disabled(store.isBusy)
             .contextMenu {
                 if connection.kind == .oracle {
                     Button("Connect") { Task { await store.connect(connection) } }
+                    Button("Connection details…") {
+                        store.diagnosticConnectionID = connection.id; store.showConnectionDetails = true
+                    }
                     Button("Edit connection…") { store.editingConnection = connection; store.showConnection = true }
                     Divider()
                     Button("Remove connection", role: .destructive) { Task { await store.removeConnection(connection) } }
@@ -229,13 +237,18 @@ struct ConsoleView: View {
                         Text(connection.name).font(.system(size: 10, weight: .medium)).lineLimit(1)
                     }.padding(.horizontal, 10).padding(.vertical, 7)
                         .background(Theme.sidebar, in: Capsule())
+                    if connection.kind == .oracle {
+                        IconButton(icon: "info.circle", help: "View connection details") {
+                            store.diagnosticConnectionID = connection.id; store.showConnectionDetails = true
+                        }
+                    }
                 }
             }.padding(.horizontal, 25).frame(height: 87)
             VSplitView {
                 editor.frame(minHeight: 230, idealHeight: 335)
                 ResultsView().frame(minHeight: 160, maxHeight: .infinity)
             }
-        }.background(.white)
+        }.background(Theme.surface)
     }
 
     private var editor: some View {
@@ -246,7 +259,7 @@ struct ConsoleView: View {
                     Text("Query 01").font(.system(size: 11, weight: .medium))
                     Circle().fill(Theme.purple.opacity(0.55)).frame(width: 4, height: 4)
                 }.padding(.horizontal, 17).frame(height: 40)
-                    .background(.white).overlay(alignment: .top) { Theme.purple.opacity(0.75).frame(height: 2) }
+                    .background(Theme.surface).overlay(alignment: .top) { Theme.purple.opacity(0.75).frame(height: 2) }
                 Spacer()
                 Text(store.connection?.dialect ?? "SQL").font(.system(size: 9)).foregroundStyle(Theme.secondary).padding(.trailing, 16)
             }.background(Theme.sidebar.opacity(0.7))
@@ -271,7 +284,7 @@ struct ConsoleView: View {
                 Text("UTF-8"); Text("·"); Text("\(store.query.components(separatedBy: "\n").count) lines")
             }.font(.system(size: 9)).foregroundStyle(Theme.secondary).padding(.horizontal, 17).frame(height: 28)
                 .background(Theme.canvas)
-        }.background(.white)
+        }.background(Theme.surface)
     }
 }
 
@@ -330,7 +343,7 @@ struct ResultsView: View {
                 }
                 Spacer()
             }
-        }.background(.white).overlay(alignment: .top) { Theme.line.frame(height: 1) }
+        }.background(Theme.surface).overlay(alignment: .top) { Theme.line.frame(height: 1) }
             .onChange(of: store.result?.id) { _, _ in filter = "" }
     }
 
@@ -356,7 +369,7 @@ struct ResultsView: View {
                                     .frame(width: width(index, result: result), height: 36, alignment: .leading)
                                     .overlay(alignment: .trailing) { Theme.line.opacity(0.6).frame(width: 1) }
                             }
-                        }.background(row.offset.isMultiple(of: 2) ? Color.white : Theme.canvas)
+                        }.background(row.offset.isMultiple(of: 2) ? Theme.surface : Theme.canvas)
                             .overlay(alignment: .bottom) { Theme.line.opacity(0.75).frame(height: 1) }
                     }
                 } header: {
@@ -439,7 +452,7 @@ struct BookmarkSidebar: View {
                             Image(systemName: "plus").font(.system(size: 10))
                             Text("Save current query").font(.system(size: 11))
                         }.foregroundStyle(Theme.secondary).frame(maxWidth: .infinity).frame(height: 43)
-                            .background(.white.opacity(0.6), in: RoundedRectangle(cornerRadius: 9))
+                            .background(Theme.surface.opacity(0.6), in: RoundedRectangle(cornerRadius: 9))
                             .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Theme.line, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
                     }.buttonStyle(.plain)
                 }.padding(.horizontal, 17).padding(.bottom, 12)
@@ -449,7 +462,7 @@ struct BookmarkSidebar: View {
                 Image(systemName: "lightbulb").font(.system(size: 13)).foregroundStyle(Theme.accent("yellow"))
                 Text("A name, a color, a little emoji.\nMake each query feel like yours.").font(.system(size: 9)).foregroundStyle(Theme.secondary).lineSpacing(4)
             }.padding(.horizontal, 23).padding(.vertical, 20)
-        }.background(Color(hex: 0xFCFAF8))
+        }.background(Theme.bookmarks)
     }
 
     private func bookmarkCard(_ bookmark: QueryBookmark) -> some View {
@@ -457,7 +470,7 @@ struct BookmarkSidebar: View {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(spacing: 8) {
                     Text(bookmark.emoji).font(.system(size: 19)).frame(width: 30, height: 30)
-                        .background(.white.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
+                        .background(Theme.surface.opacity(0.6), in: RoundedRectangle(cornerRadius: 8))
                     Spacer()
                     Image(systemName: "arrow.up.right").font(.system(size: 9)).foregroundStyle(Theme.accent(bookmark.color).opacity(0.7))
                 }

@@ -11,11 +11,33 @@ public struct DBConnection: Identifiable, Codable, Hashable, Sendable {
     public var username: String
     public var usesSID: Bool
     public var color: String
+    public var usesBundledInternationalization: Bool
+    public var additionalJARs: [String]
 
-    public init(id: UUID = UUID(), name: String, kind: Kind = .oracle, host: String = "localhost", port: Int = 1521, service: String = "FREEPDB1", username: String = "", usesSID: Bool = false, color: String = "lavender") {
+    public init(id: UUID = UUID(), name: String, kind: Kind = .oracle, host: String = "localhost", port: Int = 1521, service: String = "FREEPDB1", username: String = "", usesSID: Bool = false, color: String = "lavender", usesBundledInternationalization: Bool = true, additionalJARs: [String] = []) {
         self.id = id; self.name = name; self.kind = kind; self.host = host
         self.port = port; self.service = service; self.username = username
         self.usesSID = usesSID; self.color = color
+        self.usesBundledInternationalization = usesBundledInternationalization; self.additionalJARs = additionalJARs
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, kind, host, port, service, username, usesSID, color, usesBundledInternationalization, additionalJARs
+    }
+
+    public init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        id = try values.decode(UUID.self, forKey: .id)
+        name = try values.decode(String.self, forKey: .name)
+        kind = try values.decode(Kind.self, forKey: .kind)
+        host = try values.decode(String.self, forKey: .host)
+        port = try values.decode(Int.self, forKey: .port)
+        service = try values.decode(String.self, forKey: .service)
+        username = try values.decode(String.self, forKey: .username)
+        usesSID = try values.decode(Bool.self, forKey: .usesSID)
+        color = try values.decode(String.self, forKey: .color)
+        usesBundledInternationalization = try values.decodeIfPresent(Bool.self, forKey: .usesBundledInternationalization) ?? true
+        additionalJARs = try values.decodeIfPresent([String].self, forKey: .additionalJARs) ?? []
     }
 
     public var subtitle: String { kind == .sample ? "SQLite · local playground" : "\(host):\(port) / \(service)" }

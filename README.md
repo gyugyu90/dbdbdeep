@@ -12,12 +12,25 @@ open build/dbdbdeep.app
 
 첫 실행에서는 실제 SQLite 파일을 사용하는 **Little playground**가 열립니다. 샘플 데이터로 쿼리와 북마크를 둘러볼 수 있습니다.
 
+## 창과 패널 크기
+
+왼쪽 연결·스키마 패널과 콘솔 사이 경계를 드래그하면 왼쪽 패널을 창 너비의 약 1/3까지 확장할 수 있습니다. 창 크기에 따라 최대 너비도 바뀝니다.
+
+상단의 빈 영역 또는 앱 이름을 더블클릭하면 메뉴 막대·Dock을 제외한 화면 영역에 창을 맞춥니다. 다시 더블클릭하면 이전 크기와 위치로 돌아옵니다.
+
+**View → Appearance**에서 **Use System Setting**, **Light**, **Dark**를 선택합니다. 기본값은 macOS 설정을 따르며 별도로 선택한 모드는 다음 실행에도 유지됩니다. 다크 모드에서는 상단 캐릭터와 실행 중인 Dock 아이콘에 작은 분홍색 악마 뿔이 생깁니다.
+
 ## Oracle 연결
 
 1. 왼쪽 **Add connection** 또는 `⌘N`을 누릅니다.
 2. 연결 이름, 호스트, 포트, 서비스명 또는 SID, 계정과 비밀번호를 입력합니다.
-3. **Test connection**으로 확인한 뒤 **Save & connect**를 누릅니다.
-4. 현재 사용자가 소유한 테이블·뷰·컬럼과 기본키가 왼쪽 스키마 트리에 표시됩니다. 테이블을 클릭하면 처음 100개 행을 조회합니다.
+3. **Driver libraries**에서 이 연결에 사용할 라이브러리를 설정합니다. 번들 `orai18n.jar`는 기본으로 켜져 있으며 필요하지 않으면 끌 수 있습니다. **Add JAR…**로 다른 Oracle 추가 라이브러리를 지정할 수 있습니다. 추가 파일은 선택한 경로에서 읽으므로 파일을 옮기면 연결 설정에서 다시 지정해야 합니다.
+4. **Test connection**으로 확인한 뒤 **Save & connect**를 누릅니다.
+5. 현재 사용자가 소유한 테이블·뷰·컬럼과 기본키가 왼쪽 스키마 트리에 표시됩니다. 테이블을 클릭하면 처음 100개 행을 조회합니다.
+
+연결 창 오른쪽 **Connection details**에는 실제 JDBC URL, Service/SID, 계정, 선택한 JAR와 제한 시간을 표시합니다. 테스트 시 런타임 준비 → 드라이버 로드 → 접속·인증 → `SELECT 1 FROM DUAL` 확인 쿼리를 기록하며, 연결 저장 시 스키마 조회 결과도 기록합니다. 각 기록에는 경과 시간이 붙고 실패 시 오류 코드·SQLState·중첩 원인·확인할 사항을 보여 줍니다. 접속과 인증은 JDBC가 한 단계로 처리하므로 네트워크 성공과 인증 성공을 따로 추정하지 않습니다.
+
+실패하면 연결 창과 입력값을 유지합니다. 저장된 연결의 **Connection details…** 우클릭 메뉴 또는 콘솔 상단 정보 아이콘으로 마지막 시도 기록을 다시 열 수 있습니다. 복사 아이콘은 보고서를 클립보드에 복사하며 비밀번호는 기록·보고서에서 제외합니다. 진단 기록은 앱 세션 동안 메모리에만 유지합니다.
 
 비밀번호는 macOS Keychain에 저장하며 연결 설정 JSON에는 포함하지 않습니다. 연결을 편집하거나 제거하려면 연결 항목을 우클릭합니다. 여러 연결을 전환해도 각 Oracle 세션은 유지됩니다.
 
@@ -47,7 +60,7 @@ open build/dbdbdeep.app
 swift test
 ```
 
-빌드 스크립트는 Maven Central에서 `ojdbc11` **23.26.3.0.0**을 내려받고 SHA-256을 확인합니다. JDK의 `jlink`로 작은 Java 런타임을 만들고 드라이버·브리지와 함께 `.app` 안에 포함합니다. 빌드된 앱 실행 시 별도 Java 설치는 필요하지 않습니다. 현재 빌드는 로컬 실행용 ad-hoc 서명이며 배포용 notarization은 포함하지 않습니다.
+빌드 스크립트는 Maven Central에서 `ojdbc11` 및 `orai18n` **23.26.3.0.0**을 내려받고 SHA-256을 확인합니다. JDK의 `jlink`로 작은 Java 런타임을 만들고 드라이버·브리지와 함께 `.app` 안에 포함합니다. 빌드된 앱 실행 시 별도 Java 설치는 필요하지 않습니다. 현재 빌드는 로컬 실행용 ad-hoc 서명이며 배포용 notarization은 포함하지 않습니다.
 
 ```text
 Sources/DBDeepApp/       SwiftUI 화면, AppKit SQL 편집기, 작업 공간 상태
@@ -57,12 +70,22 @@ Tests/DBDeepCoreTests/   CRUD, 롤백, 스키마, 결과 제한, 저장, CSV 검
 scripts/                앱 번들 및 네이티브 아이콘 생성
 ```
 
-Swift ↔ Java 통신은 길이 기반 프레임을 stdin/stdout으로 주고받습니다. 자격 증명은 프로세스 인자나 파일로 넘기지 않습니다. JDBC 연결은 최대 10초, 쿼리는 60초 타임아웃을 설정합니다.
+Swift ↔ Java 통신은 길이 기반 프레임을 stdin/stdout으로 주고받습니다. 자격 증명은 프로세스 인자나 파일로 넘기지 않습니다. TCP 연결 8초, 연결 수립 10초, 소켓 읽기 70초, 일반 쿼리 60초, 연결 확인 쿼리 10초의 제한 시간을 설정합니다. 단계별 제한이므로 전체 테스트가 반드시 10초 안에 끝나는 것은 아닙니다.
 
 ## 검증 범위
 
 SQLite CRUD, Commit/Rollback, 스키마 제약조건, 행 제한과 RETURNING, 파일 저장 복원, 북마크 직렬화, CSV 이스케이프의 자동 테스트를 통과했습니다. 네이티브 앱에서 SQL 실행과 Rollback을 확인했으며, 번들 JDBC 드라이버의 실행과 Oracle 리스너 연결 오류 표시를 확인했습니다.
 
+연결 진단의 프레임 디코딩, 오류 원인·비밀번호 마스킹, 설정 스냅샷, Service/SID URL, 라이브러리 선택과 기존 프로필 호환성을 테스트합니다. 빌드 시 번들 Java 런타임에서 `KO16MSWIN949` 한글 인코딩·디코딩도 검증합니다. [ORA-17056](https://docs.oracle.com/en/error-help/db/ora-17056/) 발생 시 연결별 `orai18n.jar` 설정을 확인할 수 있습니다.
+
 실제 Oracle 서버의 인증·CRUD·스키마 조회는 서버 주소와 계정이 제공되지 않아 검증하지 않았습니다. 현재 연결 창은 기본 TCP 및 서비스명/SID 방식이며 Wallet·SSH 터널·다른 스키마 탐색은 포함하지 않습니다.
 
 Oracle 트랜잭션 동작과 JDBC 설정은 [Oracle JDBC 문서](https://docs.oracle.com/en/database/oracle/oracle-database/26/jjdbc/JDBC-coding-tips.html), SQLite 실행은 [SQLite C API 문서](https://sqlite.org/c3ref/prepare.html)를 따릅니다. 포함된 런타임의 라이선스는 번들 내 `Contents/Resources/Oracle/jre/legal`과 JDBC JAR의 배포 메타데이터를 참고합니다.
+
+실행 중인 앱과 별개로 빌드하려면 출력 경로를 지정할 수 있습니다.
+
+```sh
+DBDBDEEP_APP_OUTPUT="$PWD/build/Updated/dbdbdeep.app" ./scripts/build-app.sh
+```
+
+UI 검증용 `DBDBDEEP_BUNDLE_ID=studio.dbdbdeep.preview` 빌드는 별도 `DBDeep Preview` 작업 공간을 사용합니다.

@@ -1,5 +1,6 @@
 import AppKit
 
+let dark = CommandLine.arguments.contains("--dark")
 let directory = URL(fileURLWithPath: CommandLine.arguments[1])
 try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
 func color(_ hex: UInt32) -> NSColor {
@@ -8,13 +9,27 @@ func color(_ hex: UInt32) -> NSColor {
 let image = NSImage(size: NSSize(width: 1024, height: 1024))
 image.lockFocus()
 let shadow = NSShadow(); shadow.shadowColor = color(0x786794).withAlphaComponent(0.16); shadow.shadowBlurRadius = 30; shadow.shadowOffset = NSSize(width: 0, height: -12); shadow.set()
-color(0xEDE6FB).setFill()
+color(dark ? 0x30233F : 0xEDE6FB).setFill()
 NSBezierPath(roundedRect: NSRect(x: 72, y: 72, width: 880, height: 880), xRadius: 196, yRadius: 196).fill()
 NSShadow().set()
-color(0xC5B0EA).setFill()
+if dark {
+    color(0xEDA5BC).setFill()
+    for mirrored in [false, true] {
+        func point(_ x: CGFloat, _ y: CGFloat) -> NSPoint {
+            NSPoint(x: mirrored ? 1024 - x : x, y: y)
+        }
+        let horn = NSBezierPath()
+        horn.move(to: point(282, 683))
+        horn.curve(to: point(235, 870), controlPoint1: point(225, 735), controlPoint2: point(215, 828))
+        horn.curve(to: point(401, 713), controlPoint1: point(259, 898), controlPoint2: point(284, 751))
+        horn.close()
+        horn.fill()
+    }
+}
+color(dark ? 0xC4A2EC : 0xC5B0EA).setFill()
 NSBezierPath(roundedRect: NSRect(x: 250, y: 280, width: 524, height: 440), xRadius: 110, yRadius: 110).fill()
 NSBezierPath(rect: NSRect(x: 250, y: 440, width: 524, height: 240)).fill()
-color(0xA88AD8).setFill()
+color(dark ? 0x9872CB : 0xA88AD8).setFill()
 NSBezierPath(ovalIn: NSRect(x: 250, y: 620, width: 524, height: 150)).fill()
 color(0xE0D3F6).setStroke()
 let rim = NSBezierPath(); rim.move(to: NSPoint(x: 276, y: 482)); rim.curve(to: NSPoint(x: 748, y: 482), controlPoint1: NSPoint(x: 365, y: 416), controlPoint2: NSPoint(x: 659, y: 416)); rim.lineWidth = 10; rim.stroke()

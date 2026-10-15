@@ -40,6 +40,31 @@ public final class OracleBridge {
         return result.append('"').toString();
     }
 
+    private static void event(String stage, String level, String message) throws IOException {
+        send("{\"event\":{\"stage\":" + quote(stage) + ",\"level\":" + quote(level) + ",\"message\":" + quote(message) + "}}");
+    }
+
+    private static String failure(Throwable error, String stage) {
+        List<String> details = new ArrayList<>();
+        Set<Throwable> visited = Collections.newSetFromMap(new IdentityHashMap<>());
+        Throwable cause = error;
+        while (cause != null && visited.add(cause) && details.size() < 8) {
+            details.add(quote(cause.getClass().getName() + ": " + Objects.toString(cause.getMessage(), "(no message)")));
+            cause = cause.getCause();
+        }
+        if (error instanceof SQLException sql) {
+            SQLException next = sql.getNextException();
+            while (next != null && visited.add(next) && details.size() < 8) {
+                details.add(quote(next.getClass().getName() + ": " + Objects.toString(next.getMessage(), "(no message)")));
+                next = next.getNextException();
+            }
+        }
+        return "{\"error\":" + quote(Objects.toString(error.getMessage(), error.getClass().getName())) +
+            ",\"details\":[" + String.join(",", details) + "],\"stage\":" + quote(stage) +
+            ",\"errorCode\":" + (error instanceof SQLException sql ? sql.getErrorCode() : "null") +
+            ",\"sqlState\":" + (error instanceof SQLException sql ? quote(sql.getSQLState()) : "null") + "}";
+    }
+
     static String normalize(String sql) {
         sql = sql.strip();
         if (sql.endsWith("/")) sql = sql.substring(0, sql.length() - 1).stripTrailing();
@@ -104,6 +129,17 @@ public final class OracleBridge {
     }
 
     public static void main(String[] args) throws Exception {
+        if (args.length > 0 && args[0].equals("--charset-self-test")) {
+            Class<?> charsetClass = Class.forName("oracle.sql.CharacterSet");
+            int charsetID = charsetClass.getField("KO16MSWIN949_CHARSET").getInt(null);
+            Object charset = charsetClass.getMethod("make", int.class).invoke(null, charsetID);
+            String text = "한글 데이터 연결 확인";
+            byte[] encoded = (byte[])charsetClass.getMethod("convert", String.class).invoke(charset, text);
+            String decoded = (String)charsetClass.getMethod("toString", byte[].class, int.class, int.class).invoke(charset, encoded, 0, encoded.length);
+            if (!text.equals(decoded)) throw new AssertionError("Korean character set round-trip failed");
+            System.out.println("KO16MSWIN949 Korean character set round-trip passed.");
+            return;
+        }
         if (args.length > 0 && args[0].equals("--self-test")) {
             if (!normalize("select ';' from dual;").equals("select ';' from dual")) throw new AssertionError();
             if (!normalize("-- hi\nBEGIN NULL; END;\n/").endsWith("END;")) throw new AssertionError();
@@ -112,6 +148,7 @@ public final class OracleBridge {
             return;
         }
         Connection connection = null;
+        String stage = "driver";
         try {
             String url = read();
             Properties props = new Properties();
@@ -120,11 +157,32 @@ public final class OracleBridge {
             props.setProperty("oracle.net.CONNECT_TIMEOUT", "8000");
             props.setProperty("oracle.net.OUTBOUND_CONNECT_TIMEOUT", "10000");
             props.setProperty("oracle.jdbc.ReadTimeout", "70000");
-            Class.forName("oracle.jdbc.OracleDriver");
+            event("driver", "info", "Loading Oracle JDBC Thin driver");
+            Class<?> driverClass = Class.forName("oracle.jdbc.OracleDriver");
+            boolean internationalization = false;
+            try {
+                Class.forName("oracle.i18n.text.converter.CharacterConverter");
+                internationalization = true;
+            } catch (ClassNotFoundException ignored) {}
+            String version = Objects.toString(driverClass.getPackage().getImplementationVersion(), "available");
+            event("driver", "success", "Oracle JDBC Thin " + version + " · Java " + System.getProperty("java.version") + (internationalization ? " · orai18n charset support loaded" : " · no orai18n library selected"));
+            stage = "connecting";
+            event(stage, "info", "Oracle listener connection and account authentication · " + url);
             connection = DriverManager.getConnection(url, props);
             props.remove("password");
+            stage = "session";
             connection.setAutoCommit(false);
-            send(empty("Connected"));
+            event(stage, "success", "Authenticated session established · manual commit");
+            stage = "verification";
+            event(stage, "info", "SELECT 1 FROM DUAL · query timeout 10s");
+            try (Statement check = connection.createStatement()) {
+                check.setQueryTimeout(10);
+                try (ResultSet result = check.executeQuery("SELECT 1 FROM DUAL")) {
+                    if (!result.next() || result.getInt(1) != 1) throw new SQLException("Verification query returned an unexpected result");
+                }
+            }
+            event(stage, "success", "Verification passed · " + connection.getMetaData().getDatabaseProductVersion());
+            send(empty("Connected and verified"));
             while (true) {
                 String action = read();
                 String sql = read();
@@ -137,12 +195,12 @@ public final class OracleBridge {
                         default: send(execute(connection, sql, 1000));
                     }
                 } catch (SQLException error) {
-                    send("{\"error\":" + quote(error.getMessage()) + "}");
+                    send(failure(error, "session"));
                 }
             }
         } catch (EOFException ignored) {
-        } catch (Exception error) {
-            send("{\"error\":" + quote(error.getMessage()) + "}");
+        } catch (Exception | LinkageError error) {
+            send(failure(error, stage));
         } finally {
             if (connection != null) {
                 try { connection.rollback(); } catch (SQLException ignored) {}

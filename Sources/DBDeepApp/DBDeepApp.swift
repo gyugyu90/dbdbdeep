@@ -3,9 +3,11 @@ import SwiftUI
 @main
 struct DBDeepApp: App {
     @StateObject private var store = AppStore()
+    @AppStorage("appearanceMode") private var appearanceMode: AppAppearance = .system
     var body: some Scene {
         Window("dbdbdeep", id: "workspace") {
             WorkspaceView().environmentObject(store)
+                .onChange(of: appearanceMode, initial: true) { _, mode in mode.apply() }
         }
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 1360, height: 850)
@@ -20,6 +22,15 @@ struct DBDeepApp: App {
                 Divider()
                 Button("Export result as CSV…") { store.exportCSV() }.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(store.result?.columns.isEmpty != false)
                 Button("Refresh schema") { Task { await store.refreshSchema() } }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(!store.isConnected || store.isBusy)
+            }
+            CommandGroup(after: .sidebar) {
+                Menu("Appearance") {
+                    Picker("Appearance", selection: $appearanceMode) {
+                        ForEach(AppAppearance.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }.pickerStyle(.inline)
+                }
             }
         }
     }

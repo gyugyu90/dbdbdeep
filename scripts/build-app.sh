@@ -5,35 +5,54 @@ cd "$TASK_ROOT"
 TASK_JAVA="$(/usr/libexec/java_home -v 21)"
 TASK_DRIVER_VERSION="23.26.3.0.0"
 TASK_ORACLE="$TASK_ROOT/.oracle"
-TASK_APP="$TASK_ROOT/build/dbdbdeep.app"
+TASK_APP="${DBDBDEEP_APP_OUTPUT:-$TASK_ROOT/build/dbdbdeep.app}"
+TASK_BUNDLE_ID="${DBDBDEEP_BUNDLE_ID:-studio.dbdbdeep.app}"
 mkdir -p "$TASK_ORACLE/classes" "$TASK_ROOT/build"
-if [ ! -s "$TASK_ORACLE/ojdbc11.jar" ]; then
-    curl --fail --location --retry 2 "https://repo.maven.apache.org/maven2/com/oracle/database/jdbc/ojdbc11/$TASK_DRIVER_VERSION/ojdbc11-$TASK_DRIVER_VERSION.jar" -o "$TASK_ORACLE/ojdbc11.jar.download"
-    curl --fail --location --retry 2 "https://repo.maven.apache.org/maven2/com/oracle/database/jdbc/ojdbc11/$TASK_DRIVER_VERSION/ojdbc11-$TASK_DRIVER_VERSION.jar.sha256" -o "$TASK_ORACLE/ojdbc11.sha256"
-    TASK_EXPECTED="$(tr -d '[:space:]' < "$TASK_ORACLE/ojdbc11.sha256")"
-    TASK_ACTUAL="$(shasum -a 256 "$TASK_ORACLE/ojdbc11.jar.download" | cut -d ' ' -f 1)"
-    if [ "$TASK_EXPECTED" != "$TASK_ACTUAL" ]; then
-        echo "Oracle JDBC checksum mismatch." >&2
+download_oracle_jar() {
+    local artifact="$1" group="$2"
+    local target="$TASK_ORACLE/$artifact.jar"
+    local base="https://repo.maven.apache.org/maven2/com/oracle/database/$group/$artifact/$TASK_DRIVER_VERSION/$artifact-$TASK_DRIVER_VERSION.jar"
+    if [ ! -s "$target" ]; then
+        curl --fail --location --retry 2 "$base" -o "$target.download"
+        curl --fail --location --retry 2 "$base.sha256" -o "$target.sha256"
+        local expected actual
+        expected="$(tr -d '[:space:]' < "$target.sha256")"
+        actual="$(shasum -a 256 "$target.download" | cut -d ' ' -f 1)"
+        if [ "$expected" != "$actual" ]; then
+            echo "Oracle $artifact checksum mismatch." >&2
+            exit 1
+        fi
+        mv "$target.download" "$target"
+    fi
+}
+download_oracle_jar ojdbc11 jdbc
+download_oracle_jar orai18n nls
+"$TASK_JAVA/bin/javac" -d "$TASK_ORACLE/classes" OracleBridge/OracleBridge.java
+TASK_CLASSPATH="$TASK_ORACLE/classes:$TASK_ORACLE/ojdbc11.jar:$TASK_ORACLE/orai18n.jar"
+"$TASK_JAVA/bin/java" -cp "$TASK_CLASSPATH" OracleBridge --self-test
+if [ ! -x "$TASK_ORACLE/jre/bin/java" ] || ! "$TASK_ORACLE/jre/bin/java" --list-modules | grep -q '^jdk.charsets@'; then
+    TASK_NEW_JRE="$TASK_ORACLE/jre-next"
+    if [ -e "$TASK_NEW_JRE" ]; then
+        echo "Remove the incomplete .oracle/jre-next directory before retrying." >&2
         exit 1
     fi
-    mv "$TASK_ORACLE/ojdbc11.jar.download" "$TASK_ORACLE/ojdbc11.jar"
+    "$TASK_JAVA/bin/jlink" --add-modules java.base,java.sql,java.naming,java.management,java.security.jgss,java.xml,jdk.crypto.ec,jdk.unsupported,jdk.charsets --strip-debug --no-man-pages --no-header-files --compress=zip-6 --output "$TASK_NEW_JRE"
+    if [ -d "$TASK_ORACLE/jre" ]; then mv "$TASK_ORACLE/jre" "$TASK_ORACLE/jre-previous-$(date +%s)"; fi
+    mv "$TASK_NEW_JRE" "$TASK_ORACLE/jre"
 fi
-"$TASK_JAVA/bin/javac" -d "$TASK_ORACLE/classes" OracleBridge/OracleBridge.java
-"$TASK_JAVA/bin/java" -cp "$TASK_ORACLE/classes" OracleBridge --self-test
-if [ ! -x "$TASK_ORACLE/jre/bin/java" ]; then
-    "$TASK_JAVA/bin/jlink" --add-modules java.base,java.sql,java.naming,java.management,java.security.jgss,java.xml,jdk.crypto.ec,jdk.unsupported --strip-debug --no-man-pages --no-header-files --compress=zip-6 --output "$TASK_ORACLE/jre"
-fi
+"$TASK_ORACLE/jre/bin/java" -cp "$TASK_CLASSPATH" OracleBridge --charset-self-test
 swift build -c release
 swift scripts/make-icon.swift "$TASK_ROOT/build/AppIcon.iconset"
 iconutil -c icns "$TASK_ROOT/build/AppIcon.iconset" -o "$TASK_ROOT/build/AppIcon.icns"
+swift scripts/make-icon.swift "$TASK_ROOT/build/AppIconDark.iconset" --dark
+iconutil -c icns "$TASK_ROOT/build/AppIconDark.iconset" -o "$TASK_ROOT/build/AppIconDark.icns"
 mkdir -p "$TASK_APP/Contents/MacOS" "$TASK_APP/Contents/Resources/Oracle"
 cp "$TASK_ROOT/build/AppIcon.icns" "$TASK_APP/Contents/Resources/"
+cp "$TASK_ROOT/build/AppIconDark.icns" "$TASK_APP/Contents/Resources/"
 cp .build/release/dbdbdeep "$TASK_APP/Contents/MacOS/dbdbdeep"
-cp "$TASK_ORACLE/ojdbc11.jar" "$TASK_APP/Contents/Resources/Oracle/"
+cp "$TASK_ORACLE/ojdbc11.jar" "$TASK_ORACLE/orai18n.jar" "$TASK_APP/Contents/Resources/Oracle/"
 cp -R "$TASK_ORACLE/classes" "$TASK_APP/Contents/Resources/Oracle/"
-if [ ! -d "$TASK_APP/Contents/Resources/Oracle/jre" ]; then
-    cp -R "$TASK_ORACLE/jre" "$TASK_APP/Contents/Resources/Oracle/"
-fi
+ditto "$TASK_ORACLE/jre" "$TASK_APP/Contents/Resources/Oracle/jre"
 cat > "$TASK_APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -51,5 +70,6 @@ cat > "$TASK_APP/Contents/Info.plist" <<'PLIST'
 <key>NSPrincipalClass</key><string>NSApplication</string>
 </dict></plist>
 PLIST
+/usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $TASK_BUNDLE_ID" "$TASK_APP/Contents/Info.plist"
 codesign --force --deep --sign - "$TASK_APP"
 echo "Built: $TASK_APP"

@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 struct SQLTextEditor: NSViewRepresentable {
+    @Environment(\.colorScheme) private var colorScheme
     @Binding var text: String
     @Binding var selection: String
 
@@ -22,8 +23,8 @@ struct SQLTextEditor: NSViewRepresentable {
         view.isAutomaticTextReplacementEnabled = false
         view.allowsUndo = true
         view.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
-        view.textColor = NSColor(Color(hex: 0x555064))
-        view.backgroundColor = .white
+        view.textColor = NSColor(Theme.editorText)
+        view.backgroundColor = NSColor(Theme.surface)
         view.insertionPointColor = NSColor(Theme.purple)
         view.selectedTextAttributes = [.backgroundColor: NSColor(Theme.tint("lavender"))]
         view.textContainerInset = NSSize(width: 14, height: 22)
@@ -37,7 +38,8 @@ struct SQLTextEditor: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = true
-        scroll.backgroundColor = .white
+        scroll.backgroundColor = NSColor(Theme.surface)
+        scroll.appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
         scroll.hasVerticalRuler = true
         scroll.rulersVisible = true
         scroll.verticalRulerView = LineNumberRuler(textView: view, scrollView: scroll)
@@ -49,10 +51,15 @@ struct SQLTextEditor: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.parent = self
         guard let view = scroll.documentView as? NSTextView else { return }
+        let appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
+        let appearanceChanged = scroll.appearance?.name != appearance?.name
+        scroll.appearance = appearance
         if view.string != text {
             view.string = text
             view.setSelectedRange(NSRange(location: 0, length: 0))
             view.undoManager?.removeAllActions()
+            context.coordinator.highlight(view)
+        } else if appearanceChanged {
             context.coordinator.highlight(view)
         }
         scroll.verticalRulerView?.needsDisplay = true
@@ -76,19 +83,19 @@ struct SQLTextEditor: NSViewRepresentable {
             guard let storage = view.textStorage else { return }
             let range = NSRange(location: 0, length: storage.length)
             storage.beginEditing()
-            storage.addAttributes([.foregroundColor: NSColor(Color(hex: 0x555064)), .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)], range: range)
+            storage.addAttributes([.foregroundColor: NSColor(Theme.editorText), .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)], range: range)
             let rules: [(String, NSColor)] = [
                 ("\\b(SELECT|FROM|WHERE|ORDER|BY|GROUP|HAVING|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AS|AND|OR|NOT|NULL|IS|IN|LIKE|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|DROP|ALTER|LIMIT|OFFSET|FETCH|FIRST|ROWS|ONLY|DISTINCT|ASC|DESC|COUNT|SUM|AVG|CASE|WHEN|THEN|ELSE|END|BEGIN|COMMIT|ROLLBACK)\\b", NSColor(Theme.purple)),
-                ("\\b[0-9]+(?:\\.[0-9]+)?\\b", NSColor(Color(hex: 0xC59362))),
-                ("'(?:''|[^'])*'", NSColor(Color(hex: 0x6C9D87))),
-                ("--[^\\n]*|/\\*[\\s\\S]*?\\*/", NSColor(Color(hex: 0xAAA5B6)))
+                ("\\b[0-9]+(?:\\.[0-9]+)?\\b", NSColor(Theme.sqlNumber)),
+                ("'(?:''|[^'])*'", NSColor(Theme.sqlString)),
+                ("--[^\\n]*|/\\*[\\s\\S]*?\\*/", NSColor(Theme.sqlComment))
             ]
             for (pattern, color) in rules {
                 guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
                 for match in expression.matches(in: view.string, range: range) { storage.addAttribute(.foregroundColor, value: color, range: match.range) }
             }
             storage.endEditing()
-            view.typingAttributes = [.font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular), .foregroundColor: NSColor(Color(hex: 0x555064))]
+            view.typingAttributes = [.font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular), .foregroundColor: NSColor(Theme.editorText)]
         }
     }
 }
@@ -106,13 +113,13 @@ final class LineNumberRuler: NSRulerView {
         drawHashMarksAndLabels(in: dirtyRect)
     }
     override func drawHashMarksAndLabels(in rect: NSRect) {
-        NSColor.white.setFill(); bounds.fill()
+        NSColor(Theme.surface).setFill(); bounds.fill()
         guard let view = textView, let layout = view.layoutManager, let container = view.textContainer else { return }
         let string = view.string as NSString
         let visible = layout.glyphRange(forBoundingRect: view.visibleRect, in: container)
         var line = 1
         var index = 0
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular), .foregroundColor: NSColor(Color(hex: 0xC2BDCC))]
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular), .foregroundColor: NSColor(Theme.lineNumber)]
         while index < string.length {
             let glyph = layout.glyphIndexForCharacter(at: min(index, max(0, string.length - 1)))
             if glyph >= visible.location && glyph <= NSMaxRange(visible) {
