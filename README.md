@@ -2,11 +2,11 @@
 
 A cheerful macOS app for exploring Oracle databases, running SQL, and keeping your favorite queries close. Includes a local SQLite playground to try things out without a server.
 
-**Version 0.1.0**
+**Version 0.1.1**
 
 ## Get started
 
-1. Download the [DMG for Apple Silicon](https://github.com/gyugyu90/dbdbdeep/releases/download/v0.1.0/dbdbdeep-0.1.0-macos-arm64.dmg) from [GitHub Releases](https://github.com/gyugyu90/dbdbdeep/releases/latest).
+1. Download the DMG for Apple Silicon from [GitHub Releases](https://github.com/gyugyu90/dbdbdeep/releases/latest).
 2. Open the DMG and drag **dbdbdeep.app** into **Applications**.
 3. Open dbdbdeep from Applications, then eject the disk image.
 
