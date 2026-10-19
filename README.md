@@ -34,7 +34,7 @@ open build/dbdbdeep.app
 2. Enter the host, port, service name or SID, username, and password.
 3. Click **Test connection**, then **Save & connect**.
 
-Your tables, views, and columns appear in the left sidebar. Click a table to preview up to 100 rows. Right-click a connection to edit, remove, or reconnect. Saved Oracle connections need to be reopened after restarting the app.
+Your tables, views, and columns appear in the left sidebar. Click a table to preview up to 100 rows. Right-click a connection to edit, remove, or reconnect. Running a query opens a saved connection automatically when needed, including after an idle session expires.
 
 Passwords stay in macOS Keychain. Click the info icon beside **Password** for details.
 
@@ -42,7 +42,8 @@ If connecting fails, **Connection details** shows the attempted settings, progre
 
 ## Run queries
 
-- `⌘↵` runs your SQL, or just the selected text. Oracle accepts one SQL statement or PL/SQL block at a time.
+- Place the cursor in a SQL statement and click **Run statement** or press `⌘↵` to run just that statement. Separate statements with semicolons. Selecting text switches to **Run selection**, which runs only the selected text. Oracle accepts one SQL statement or PL/SQL block at a time.
+- Before running SQL, the app checks the session and reconnects if needed. If the connection fails during execution, the query is not automatically repeated; check the outcome before running it again.
 - Changes use **manual commit**. Press `⌘⇧↵` to commit, or choose **Query → Rollback changes** to undo uncommitted changes. Oracle DDL follows its [implicit commit rules](https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/COMMIT.html).
 - Results show up to 1,000 rows. Filter the fetched rows, double-click a value to copy it, or press `⌘⇧E` to export them as CSV. Export includes all fetched rows, regardless of the filter; long Oracle text values are previews.
 - Open **History** to reload a recent query without running it.

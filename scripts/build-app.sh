@@ -5,9 +5,15 @@ cd "$TASK_ROOT"
 TASK_JAVA="$(/usr/libexec/java_home -v 21)"
 TASK_DRIVER_VERSION="23.26.3.0.0"
 TASK_ORACLE="$TASK_ROOT/.oracle"
-TASK_APP="${DBDBDEEP_APP_OUTPUT:-$TASK_ROOT/build/dbdbdeep.app}"
 TASK_BUNDLE_ID="${DBDBDEEP_BUNDLE_ID:-studio.dbdbdeep.app}"
-mkdir -p "$TASK_ORACLE/classes" "$TASK_ROOT/build"
+TASK_SUPPORT="$TASK_ROOT/build/Support.noindex"
+if [ "$TASK_BUNDLE_ID" = "studio.dbdbdeep.preview" ]; then
+    TASK_DEFAULT_APP="$TASK_SUPPORT/Preview/dbdbdeep.app"
+else
+    TASK_DEFAULT_APP="$TASK_ROOT/build/dbdbdeep.app"
+fi
+TASK_APP="${DBDBDEEP_APP_OUTPUT:-$TASK_DEFAULT_APP}"
+mkdir -p "$TASK_ORACLE/classes" "$TASK_ROOT/build" "$TASK_SUPPORT"
 download_oracle_jar() {
     local artifact="$1" group="$2"
     local target="$TASK_ORACLE/$artifact.jar"
@@ -42,9 +48,12 @@ if [ ! -x "$TASK_ORACLE/jre/bin/java" ] || ! "$TASK_ORACLE/jre/bin/java" --list-
 fi
 "$TASK_ORACLE/jre/bin/java" -cp "$TASK_CLASSPATH" OracleBridge --charset-self-test
 swift build -c release
-swift scripts/make-icon.swift "$TASK_ROOT/build/AppIcon.iconset"
+swiftc -parse-as-library -target "$(uname -m)-apple-macosx14.0" \
+    Sources/DBDeepApp/Color+Hex.swift Sources/DBDeepApp/Mochi.swift scripts/make-icon.swift \
+    -o "$TASK_SUPPORT/make-icon"
+"$TASK_SUPPORT/make-icon" "$TASK_ROOT/build/AppIcon.iconset"
 iconutil -c icns "$TASK_ROOT/build/AppIcon.iconset" -o "$TASK_ROOT/build/AppIcon.icns"
-swift scripts/make-icon.swift "$TASK_ROOT/build/AppIconDark.iconset" --dark
+"$TASK_SUPPORT/make-icon" "$TASK_ROOT/build/AppIconDark.iconset" --dark
 iconutil -c icns "$TASK_ROOT/build/AppIconDark.iconset" -o "$TASK_ROOT/build/AppIconDark.icns"
 mkdir -p "$TASK_APP/Contents/MacOS" "$TASK_APP/Contents/Resources/Oracle"
 cp "$TASK_ROOT/build/AppIcon.icns" "$TASK_APP/Contents/Resources/"

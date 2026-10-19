@@ -61,7 +61,7 @@ struct WorkspaceView: View {
                 VStack(spacing: 8) {
                     ForEach(Array(store.history.enumerated()), id: \.offset) { _, entry in
                         Button {
-                            store.query = entry.sql; store.selectedSQL = ""; store.showHistory = false
+                            store.query = entry.sql; store.selectedSQL = ""; store.cursorLocation = 0; store.showHistory = false
                         } label: {
                             VStack(alignment: .leading, spacing: 5) {
                                 Text(entry.sql).font(.system(size: 11, design: .monospaced)).lineLimit(3).frame(maxWidth: .infinity, alignment: .leading)
@@ -265,9 +265,10 @@ struct ConsoleView: View {
             }.background(Theme.sidebar.opacity(0.7))
                 .overlay(alignment: .bottom) { Theme.line.frame(height: 1) }
             HStack(spacing: 6) {
-                SoftButton(title: store.isBusy ? "Running…" : "Run query", icon: "play.fill", prominent: true) { Task { await store.run() } }
-                    .keyboardShortcut(.return, modifiers: .command).disabled(store.isBusy || !store.isConnected)
-                    .opacity(store.isBusy || !store.isConnected ? 0.6 : 1)
+                SoftButton(title: store.isBusy ? "Running…" : (store.selectedSQL.isEmpty ? "Run statement" : "Run selection"), icon: "play.fill", prominent: true) { Task { await store.run() } }
+                    .keyboardShortcut(.return, modifiers: .command).disabled(!store.canRunQuery)
+                    .opacity(store.canRunQuery ? 1 : 0.6)
+                    .help(store.selectedSQL.isEmpty ? "Run the statement at the cursor · ⌘↵" : "Run only the selected SQL · ⌘↵")
                 Text("⌘ ↵").font(.system(size: 10)).foregroundStyle(Theme.secondary).padding(.leading, 2)
                 Spacer(minLength: 0)
                 IconButton(icon: "bookmark", help: "Bookmark this query · ⌘D") { store.newBookmark() }.keyboardShortcut("d", modifiers: .command)
@@ -276,10 +277,10 @@ struct ConsoleView: View {
                 IconButton(icon: "arrow.uturn.backward", help: "Roll back changes") { Task { await store.transaction(commit: false) } }.disabled(store.isBusy || !store.isConnected)
                 CapsuleTag(text: "MANUAL COMMIT", color: "mint").padding(.leading, 3)
             }.padding(.horizontal, 16).frame(height: 54)
-            SQLTextEditor(text: $store.query, selection: $store.selectedSQL)
+            SQLTextEditor(text: $store.query, selection: $store.selectedSQL, cursorLocation: $store.cursorLocation)
             HStack(spacing: 5) {
                 Image(systemName: "info.circle").font(.system(size: 9))
-                Text(store.selectedSQL.isEmpty ? "Select text to run just that part" : "Selected SQL will run")
+                Text(store.selectedSQL.isEmpty ? (store.sqlToRun.isEmpty ? "Place the cursor in a SQL statement" : "Statement at cursor will run · ⌘↵") : "Only selected SQL will run · ⌘↵")
                 Spacer()
                 Text("UTF-8"); Text("·"); Text("\(store.query.components(separatedBy: "\n").count) lines")
             }.font(.system(size: 9)).foregroundStyle(Theme.secondary).padding(.horizontal, 17).frame(height: 28)

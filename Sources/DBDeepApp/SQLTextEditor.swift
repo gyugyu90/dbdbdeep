@@ -5,6 +5,13 @@ struct SQLTextEditor: NSViewRepresentable {
     @Environment(\.colorScheme) private var colorScheme
     @Binding var text: String
     @Binding var selection: String
+    @Binding var cursorLocation: Int
+
+    init(text: Binding<String>, selection: Binding<String>, cursorLocation: Binding<Int> = .constant(0)) {
+        _text = text
+        _selection = selection
+        _cursorLocation = cursorLocation
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -72,12 +79,19 @@ struct SQLTextEditor: NSViewRepresentable {
             guard let view = notification.object as? NSTextView else { return }
             parent.text = view.string
             highlight(view)
+            updateSelection(view)
             view.enclosingScrollView?.verticalRulerView?.needsDisplay = true
         }
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let view = notification.object as? NSTextView else { return }
+            updateSelection(view)
+        }
+
+        private func updateSelection(_ view: NSTextView) {
             let range = view.selectedRange()
-            parent.selection = range.length > 0 ? (view.string as NSString).substring(with: range) : ""
+            let selected = range.length > 0 ? (view.string as NSString).substring(with: range) : ""
+            if parent.selection != selected { parent.selection = selected }
+            if parent.cursorLocation != range.location { parent.cursorLocation = range.location }
         }
         func highlight(_ view: NSTextView) {
             guard let storage = view.textStorage else { return }

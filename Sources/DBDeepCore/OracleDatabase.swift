@@ -135,6 +135,11 @@ public actor OracleDatabase {
         return try session.request("execute", sql: sql)
     }
 
+    public func validateConnection() throws {
+        guard let session else { throw DatabaseError("연결된 세션이 없습니다.") }
+        _ = try session.request("validate")
+    }
+
     public func commit() throws -> QueryResult {
         guard let session else { throw DatabaseError("연결된 세션이 없습니다.") }
         return try session.request("commit")

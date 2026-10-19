@@ -128,6 +128,15 @@ public final class OracleBridge {
         return "{\"columns\":[],\"rows\":[],\"affected\":0,\"elapsed\":0,\"truncated\":false,\"message\":" + quote(message) + "}";
     }
 
+    static void verifyConnection(Connection connection, int timeout) throws SQLException {
+        try (Statement check = connection.createStatement()) {
+            check.setQueryTimeout(timeout);
+            try (ResultSet result = check.executeQuery("SELECT 1 FROM DUAL")) {
+                if (!result.next() || result.getInt(1) != 1) throw new SQLException("Verification query returned an unexpected result");
+            }
+        }
+    }
+
     public static void main(String[] args) throws Exception {
         if (args.length > 0 && args[0].equals("--charset-self-test")) {
             Class<?> charsetClass = Class.forName("oracle.sql.CharacterSet");
@@ -175,12 +184,7 @@ public final class OracleBridge {
             event(stage, "success", "Authenticated session established · manual commit");
             stage = "verification";
             event(stage, "info", "SELECT 1 FROM DUAL · query timeout 10s");
-            try (Statement check = connection.createStatement()) {
-                check.setQueryTimeout(10);
-                try (ResultSet result = check.executeQuery("SELECT 1 FROM DUAL")) {
-                    if (!result.next() || result.getInt(1) != 1) throw new SQLException("Verification query returned an unexpected result");
-                }
-            }
+            verifyConnection(connection, 10);
             event(stage, "success", "Verification passed · " + connection.getMetaData().getDatabaseProductVersion());
             send(empty("Connected and verified"));
             while (true) {
@@ -188,6 +192,7 @@ public final class OracleBridge {
                 String sql = read();
                 try {
                     switch (action) {
+                        case "validate": verifyConnection(connection, 5); send(empty("Connection verified")); break;
                         case "commit": connection.commit(); send(empty("Changes committed")); break;
                         case "rollback": connection.rollback(); send(empty("Changes rolled back")); break;
                         case "close": return;

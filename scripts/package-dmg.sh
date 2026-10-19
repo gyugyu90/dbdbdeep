@@ -19,8 +19,8 @@ if [ -e "$TASK_OUTPUT" ]; then
     exit 1
 fi
 
-mkdir -p "$TASK_ROOT/build"
-TASK_STAGING="$(mktemp -d "$TASK_ROOT/build/dmg-stage.XXXXXX")"
+mkdir -p "$TASK_ROOT/build/Support.noindex"
+TASK_STAGING="$(mktemp -d "$TASK_ROOT/build/Support.noindex/dmg-stage.XXXXXX")"
 TASK_CONTENTS="$TASK_STAGING/contents"
 TASK_MOUNT="$TASK_STAGING/mount"
 TASK_WORK="$TASK_STAGING/installer.dmg"
