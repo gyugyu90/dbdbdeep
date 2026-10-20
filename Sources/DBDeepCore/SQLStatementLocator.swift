@@ -6,6 +6,25 @@ public struct SQLStatement: Equatable, Sendable {
 }
 
 public enum SQLStatementLocator {
+    public static func appendingStatement(_ statement: String, to sql: String) -> (sql: String, range: NSRange)? {
+        guard let incoming = singleStatement(in: statement) else { return nil }
+        let tokens = tokenize(sql)
+        let existing = statements(in: sql)
+        guard tokens.allSatisfy({ token in
+            token.kind == .semicolon || token.kind == .slash || existing.contains {
+                token.range.location >= $0.range.location && NSMaxRange(token.range) <= NSMaxRange($0.range)
+            }
+        }) else { return nil }
+        var combined = sql
+        if !combined.isEmpty {
+            if let last = tokens.last, last.kind != .semicolon && last.kind != .slash { combined += "\n;" }
+            combined += "\n\n"
+        }
+        let range = NSRange(location: combined.utf16.count, length: incoming.text.utf16.count)
+        combined += incoming.text
+        return (combined, range)
+    }
+
     public static func statementAtOrBefore(in sql: String, atUTF16Offset offset: Int) -> SQLStatement? {
         let source = sql as NSString
         let location = min(max(0, offset), source.length)
@@ -38,25 +57,7 @@ public enum SQLStatementLocator {
     }
 
     public static func statement(in sql: String, atUTF16Offset offset: Int) -> SQLStatement? {
-        let source = sql as NSString
-        let location = min(max(0, offset), source.length)
-        let statements = statements(in: sql)
-        if let statement = statements.first(where: { NSLocationInRange(location, $0.range) }) { return statement }
-        let previous = statements.last { NSMaxRange($0.range) <= location }
-        if let previous {
-            let gap = source.substring(with: NSRange(location: NSMaxRange(previous.range), length: location - NSMaxRange(previous.range)))
-            if gap.trimmingCharacters(in: .whitespaces).isEmpty { return previous }
-            let remainder = source.substring(from: NSMaxRange(previous.range))
-            if remainder.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return previous }
-        } else if let first = statements.first {
-            let prefix = source.substring(to: first.range.location)
-            if prefix.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty { return first }
-        }
-        if let next = statements.first(where: { $0.range.location > location }) {
-            let gap = source.substring(with: NSRange(location: location, length: next.range.location - location))
-            if gap.trimmingCharacters(in: .whitespaces).isEmpty { return next }
-        }
-        return nil
+        statementAtOrBefore(in: sql, atUTF16Offset: offset)
     }
 
     public static func statements(in sql: String) -> [SQLStatement] {

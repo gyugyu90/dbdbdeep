@@ -2,7 +2,7 @@
 
 A cheerful macOS app for exploring Oracle databases, running SQL, and keeping your favorite queries close. Includes a local SQLite playground to try things out without a server.
 
-**Version 0.1.1**
+**Version 0.2.0**
 
 ## Get started
 
@@ -42,7 +42,7 @@ If connecting fails, **Connection details** shows the attempted settings, progre
 
 ## Run queries
 
-- Place the cursor in a SQL statement and click **Run statement** or press `⌘↵` to run just that statement. Separate statements with semicolons. Selecting text switches to **Run selection**, which runs only the selected text. Oracle accepts one SQL statement or PL/SQL block at a time.
+- Place the cursor in a SQL statement and click **Run statement** or press `⌘↵` to run just that statement. In the whitespace between statements or after the final query, both Run statement and bookmarking target the nearest statement before the cursor. Separate statements with semicolons. Selecting text switches to **Run selection**, which runs only the selected text. Oracle accepts one SQL statement or PL/SQL block at a time.
 - Schema suggestions appear as you type: tables after `FROM` or `JOIN`, and columns in expressions such as `SELECT` and `WHERE`. Table aliases work too (`c.`). Use `↑`/`↓` to choose, `Tab` or `Return` to insert, `Esc` to close, or `Control-Space` to request suggestions. Connect first to load your Oracle schema.
 - Before running SQL, the app checks the session and reconnects if needed. If the connection fails during execution, the query is not automatically repeated; check the outcome before running it again.
 - Changes use **manual commit**. Press `⌘⇧↵` to commit, or choose **Query → Rollback changes** to undo uncommitted changes. Oracle DDL follows its [implicit commit rules](https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/COMMIT.html).
@@ -52,7 +52,9 @@ If connecting fails, **Connection details** shows the attempted settings, progre
 
 ## Save favorite queries
 
-Press `⌘D` to bookmark the statement at the cursor, or the previous statement when the cursor is between queries. Each bookmark holds one SQL statement or PL/SQL block, with a name, color, emoji, and optional connection. A filled bookmark button means it's already saved; click it to edit. Click a library bookmark to load it without running it, or right-click to edit, copy, or delete it.
+Each connection has its own library. Press `⌘D` to bookmark the statement at the cursor, or the previous statement when the cursor is between queries. Each bookmark holds one SQL statement or PL/SQL block, with a name, color, and emoji, and belongs to the selected connection. A filled bookmark button means it's already saved in this connection; click it to edit. The matching library card is highlighted as you move the cursor. Click a card to focus its query in the console; if missing, the query is appended without replacing your work. Click the card’s play button to run only that saved query, or right-click to edit, copy, or delete it.
+
+Older bookmarks without a connection, and bookmarks from removed connections, stay under **Unassigned queries**. Select a connection and click **Move here** to add one to its library.
 
 Connections, bookmarks, and query drafts are saved locally. History and results last for the current app session.
 

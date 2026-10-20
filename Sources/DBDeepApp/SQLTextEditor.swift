@@ -9,13 +9,15 @@ struct SQLTextEditor: NSViewRepresentable {
     @Binding var cursorLocation: Int
     var tables: [SchemaTable]
     var connectionKind: DBConnection.Kind
+    var focusRequest: SQLEditorFocus?
 
-    init(text: Binding<String>, selection: Binding<String>, cursorLocation: Binding<Int> = .constant(0), tables: [SchemaTable] = [], connectionKind: DBConnection.Kind = .oracle) {
+    init(text: Binding<String>, selection: Binding<String>, cursorLocation: Binding<Int> = .constant(0), tables: [SchemaTable] = [], connectionKind: DBConnection.Kind = .oracle, focusRequest: SQLEditorFocus? = nil) {
         _text = text
         _selection = selection
         _cursorLocation = cursorLocation
         self.tables = tables
         self.connectionKind = connectionKind
+        self.focusRequest = focusRequest
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -75,8 +77,7 @@ struct SQLTextEditor: NSViewRepresentable {
         scroll.appearance = appearance
         if view.string != text {
             context.coordinator.dismissCompletion()
-            view.string = text
-            view.setSelectedRange(NSRange(location: 0, length: 0))
+            context.coordinator.replaceText(in: view, with: text)
             view.undoManager?.removeAllActions()
             context.coordinator.highlight(view)
         } else if appearanceChanged {
@@ -84,6 +85,7 @@ struct SQLTextEditor: NSViewRepresentable {
             context.coordinator.highlight(view)
         }
         scroll.verticalRulerView?.needsDisplay = true
+        context.coordinator.scheduleFocus(in: view)
     }
 
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
@@ -97,9 +99,44 @@ struct SQLTextEditor: NSViewRepresentable {
         private(set) var completion: SQLCompletionResult?
         private(set) var selectedCompletion = 0
         private var applyingCompletion = false
+        private var synchronizingSelection = false
+        private var scheduledFocusID: UUID?
+        private(set) var appliedFocusID: UUID?
         init(_ parent: SQLTextEditor) { self.parent = parent }
+
+        func replaceText(in view: NSTextView, with text: String) {
+            synchronizingSelection = true
+            defer { synchronizingSelection = false }
+            view.string = text
+            view.setSelectedRange(NSRange(location: 0, length: 0))
+        }
+
+        func scheduleFocus(in view: NSTextView) {
+            guard let request = parent.focusRequest, request.id != scheduledFocusID else { return }
+            scheduledFocusID = request.id
+            DispatchQueue.main.async { [weak self, weak view] in
+                guard let self, let view else { return }
+                self.applyFocus(request, in: view)
+            }
+        }
+
+        func applyFocus(_ request: SQLEditorFocus, in view: NSTextView) {
+            guard parent.focusRequest?.id == request.id, appliedFocusID != request.id,
+                  view.string == parent.text, request.range.location != NSNotFound,
+                  request.range.location >= 0, request.range.length >= 0,
+                  request.range.location <= (view.string as NSString).length,
+                  request.range.length <= (view.string as NSString).length - request.range.location else { return }
+            dismissCompletion()
+            synchronizingSelection = true
+            defer { synchronizingSelection = false }
+            appliedFocusID = request.id
+            view.window?.makeFirstResponder(view)
+            view.setSelectedRange(NSRange(location: request.range.location, length: 0))
+            view.scrollRangeToVisible(NSRange(location: request.range.location, length: 0))
+            if view.window != nil { view.showFindIndicator(for: request.range) }
+        }
         func textDidChange(_ notification: Notification) {
-            guard let view = notification.object as? NSTextView else { return }
+            guard !synchronizingSelection, let view = notification.object as? NSTextView else { return }
             parent.text = view.string
             highlight(view)
             updateSelection(view)
@@ -184,6 +221,7 @@ struct SQLTextEditor: NSViewRepresentable {
         }
 
         private func updateSelection(_ view: NSTextView) {
+            guard !synchronizingSelection else { return }
             let range = view.selectedRange()
             let selected = range.length > 0 ? (view.string as NSString).substring(with: range) : ""
             if parent.selection != selected { parent.selection = selected }

@@ -1,5 +1,5 @@
-import AppKit
-import SwiftUI
+import Foundation
+import Combine
 import DBDeepCore
 
 @MainActor
@@ -10,6 +10,7 @@ final class AppStore: ObservableObject {
     @Published var query = ""
     @Published var selectedSQL = ""
     @Published var cursorLocation = 0
+    @Published private(set) var editorFocusRequest: SQLEditorFocus?
     @Published var tables: [SchemaTable] = []
     @Published var results: [UUID: QueryResult] = [:]
     @Published var connectedIDs: Set<UUID> = []
@@ -25,6 +26,7 @@ final class AppStore: ObservableObject {
     @Published var showBookmark = false
     @Published var editingBookmark: QueryBookmark?
     @Published private(set) var bookmarkDraftSQL = ""
+    @Published private(set) var bookmarkDraftConnectionID: UUID?
     @Published var schemaSearch = ""
     @Published var bookmarkSearch = ""
     @Published var bookmarkFilter: String?
@@ -33,10 +35,9 @@ final class AppStore: ObservableObject {
     @Published var showBookmarks = true
     @Published var expandedTables: Set<String> = ["customers"]
 
-    let directory: URL
-    private var sqlite: SQLiteDatabase?
-    private var oracle: [UUID: any OracleConnectionSession] = [:]
-    private let makeOracleSession: (DBConnection, URL) -> any OracleConnectionSession
+    var directory: URL { workspaceFiles.directory }
+    private let workspaceFiles: WorkspaceFileStore
+    private let sessions: DatabaseSessions
     private let readPassword: (UUID) throws -> String
     private var drafts: [String: String] = [:]
     private var persistWork: DispatchWorkItem?
@@ -45,54 +46,47 @@ final class AppStore: ObservableObject {
     var connection: DBConnection? { connections.first { $0.id == selectedID } }
     var result: QueryResult? { selectedID.flatMap { results[$0] } }
     var isConnected: Bool { selectedID.map { connectedIDs.contains($0) } ?? false }
-    var sqlToRun: String { selectedSQL.isEmpty ? SQLStatementLocator.statement(in: query, atUTF16Offset: cursorLocation)?.text ?? "" : selectedSQL }
+    var cursorStatement: SQLStatement? { SQLStatementLocator.statementAtOrBefore(in: query, atUTF16Offset: cursorLocation) }
+    var sqlToRun: String { selectedSQL.isEmpty ? cursorStatement?.text ?? "" : selectedSQL }
     var canRunQuery: Bool { connection != nil && !isBusy && !sqlToRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-    var sqlToBookmark: String { SQLStatementLocator.statementAtOrBefore(in: query, atUTF16Offset: cursorLocation)?.text ?? "" }
-    var canBookmarkQuery: Bool { !isBusy && !sqlToBookmark.isEmpty }
+    var sqlToBookmark: String { cursorStatement?.text ?? "" }
+    var canBookmarkQuery: Bool { connection != nil && !isBusy && !sqlToBookmark.isEmpty }
+    var connectionBookmarks: [QueryBookmark] {
+        guard let connection else { return [] }
+        return bookmarks.filter { $0.connectionID == connection.id }
+    }
+    var unassignedBookmarks: [QueryBookmark] {
+        let connectionIDs = Set(connections.map(\.id))
+        return bookmarks.filter { bookmark in
+            bookmark.connectionID.map { !connectionIDs.contains($0) } ?? true
+        }
+    }
     var currentBookmark: QueryBookmark? {
         guard let key = SQLStatementLocator.comparisonKey(for: sqlToBookmark) else { return nil }
-        let matching = bookmarks.filter { ($0.connectionID == nil || $0.connectionID == selectedID) && SQLStatementLocator.comparisonKey(for: $0.sql) == key }
-        return matching.first { $0.connectionID == selectedID } ?? matching.first
+        return connectionBookmarks.first { SQLStatementLocator.comparisonKey(for: $0.sql) == key }
     }
     var filteredTables: [SchemaTable] { tables.filter { schemaSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(schemaSearch) } }
     var filteredBookmarks: [QueryBookmark] {
-        bookmarks.filter { (bookmarkSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(bookmarkSearch) || $0.sql.localizedCaseInsensitiveContains(bookmarkSearch)) && (bookmarkFilter == nil || $0.color == bookmarkFilter) }
+        connectionBookmarks.filter { (bookmarkSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(bookmarkSearch) || $0.sql.localizedCaseInsensitiveContains(bookmarkSearch)) && (bookmarkFilter == nil || $0.color == bookmarkFilter) }
     }
 
     init(directory: URL? = nil,
          makeOracleSession: @escaping (DBConnection, URL) -> any OracleConnectionSession = { OracleDatabase(connection: $0, runtime: $1) },
          readPassword: @escaping (UUID) throws -> String = { try PasswordKeychain.read(for: $0) }) {
-        self.makeOracleSession = makeOracleSession
         self.readPassword = readPassword
-        let workspaceName = Bundle.main.bundleIdentifier == "studio.dbdbdeep.preview" ? "DBDeep Preview" : "DBDeep"
-        self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent(workspaceName)
+        let workspaceDirectory = directory ?? WorkspaceDefaults.directory
+        workspaceFiles = WorkspaceFileStore(directory: workspaceDirectory)
+        sessions = DatabaseSessions(directory: workspaceDirectory, runtime: DatabaseSessions.bundledOracleRuntime, makeOracleSession: makeOracleSession)
         do {
-            try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
-            let file = self.directory.appendingPathComponent("workspace.json")
-            if FileManager.default.fileExists(atPath: file.path) {
-                let state = try JSONDecoder().decode(WorkspaceState.self, from: Data(contentsOf: file))
-                connections = state.connections; bookmarks = state.bookmarks; drafts = state.drafts
-                selectedID = state.selectedConnection ?? connections.first?.id
-            } else {
-                let sample = DBConnection(name: "Little playground", kind: .sample, color: "mint")
-                connections = [sample]; selectedID = sample.id
-                bookmarks = [
-                    QueryBookmark(name: "All the lovely customers", emoji: "🌷", color: "lavender", sql: Self.sampleQuery, connectionID: sample.id),
-                    QueryBookmark(name: "Who's on the pro plan?", emoji: "⚡️", color: "peach", sql: "SELECT name, email, plan\nFROM customers\nWHERE plan = 'pro';", connectionID: sample.id),
-                    QueryBookmark(name: "A little order check", emoji: "🧺", color: "mint", sql: "SELECT o.id, c.name, o.total, o.status\nFROM orders o\nJOIN customers c ON c.id = o.customer_id;", connectionID: sample.id),
-                    QueryBookmark(name: "Make room for a new note", emoji: "✏️", color: "yellow", sql: "INSERT INTO notes (content)\nVALUES ('Something good is on its way.');", connectionID: sample.id)
-                ]
-            }
+            let state = try workspaceFiles.load() ?? WorkspaceDefaults.makeWorkspace()
+            connections = state.connections; bookmarks = state.bookmarks; drafts = state.drafts
+            selectedID = state.selectedConnection ?? connections.first?.id
             query = selectedID.flatMap { drafts[$0.uuidString] } ?? defaultQuery
         } catch { self.error = "작업 공간을 읽을 수 없습니다: \(error.localizedDescription)" }
     }
 
-    static let sampleQuery = "-- A little peek at our customers 🌷\nSELECT\n    id, name, email, plan, status\nFROM customers\nORDER BY id;"
-    var oracleRuntime: URL {
-        let bundled = Bundle.main.resourceURL!.appendingPathComponent("Oracle")
-        return FileManager.default.fileExists(atPath: bundled.path) ? bundled : URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".oracle")
-    }
-    var defaultQuery: String { connection?.kind == .oracle ? "-- Hello, Oracle ✨\nSELECT *\nFROM user_tables\nFETCH FIRST 100 ROWS ONLY;" : Self.sampleQuery }
+    static let sampleQuery = WorkspaceDefaults.sampleQuery
+    var defaultQuery: String { WorkspaceDefaults.query(for: connection?.kind) }
 
     func start() async {
         guard let connection, connection.kind == .sample else { return }
@@ -104,6 +98,8 @@ final class AppStore: ObservableObject {
         guard !isBusy, target.id != selectedID else { return }
         if let selectedID { drafts[selectedID.uuidString] = query }
         selectedID = target.id; selectedSQL = ""; cursorLocation = 0; error = nil
+        editorFocusRequest = nil
+        bookmarkSearch = ""; bookmarkFilter = nil
         query = drafts[target.id.uuidString] ?? defaultQuery
         tables = schemaByConnection[target.id] ?? []
         status = connectedIDs.contains(target.id) ? "Connected · ready when you are" : "Run a query to connect"
@@ -136,13 +132,11 @@ final class AppStore: ObservableObject {
         defer { isBusy = false }
         let attemptID = beginAttempt(target, purpose: "Test connection", savedPassword: password.isEmpty)
         do {
-            let secret = try password.isEmpty ? PasswordKeychain.read(for: target.id) : password
+            let secret = try password.isEmpty ? readPassword(target.id) : password
             record(ConnectionEvent(stage: .credentials, level: .success, message: "접속 계정을 준비했습니다 · \(target.username)"), connectionID: target.id, attemptID: attemptID)
-            let database = OracleDatabase(connection: target, runtime: oracleRuntime)
-            try await database.connect(password: secret) { [weak self] event in
+            try await sessions.testConnection(target, password: secret) { [weak self] event in
                 await self?.record(event, connectionID: target.id, attemptID: attemptID)
             }
-            await database.disconnect()
             record(ConnectionEvent(stage: .session, level: .success, message: "테스트 세션을 닫았습니다. 데이터 변경은 없습니다."), connectionID: target.id, attemptID: attemptID)
             connectionAttempts[target.id]?.finish(.succeeded)
         } catch { finishFailure(error, target: target, attemptID: attemptID) }
@@ -160,22 +154,15 @@ final class AppStore: ObservableObject {
         var attemptID: UUID?
         do {
             if target.kind == .sample {
-                if sqlite == nil {
-                    let database = try SQLiteDatabase(path: directory.appendingPathComponent("playground.sqlite").path)
-                    try await database.seed()
-                    _ = try await database.execute("BEGIN")
-                    sqlite = database
-                }
+                try await sessions.connect(target)
             } else {
                 let identifier = beginAttempt(target, purpose: purpose, savedPassword: password == nil)
                 attemptID = identifier
                 let secret = try password ?? readPassword(target.id)
                 record(ConnectionEvent(stage: .credentials, level: .success, message: "접속 계정을 준비했습니다 · \(target.username)"), connectionID: target.id, attemptID: identifier)
-                let database = makeOracleSession(target, oracleRuntime)
-                try await database.connect(password: secret) { [weak self] event in
+                try await sessions.connect(target, password: secret) { [weak self] event in
                     await self?.record(event, connectionID: target.id, attemptID: identifier)
                 }
-                oracle[target.id] = database
             }
             connectedIDs.insert(target.id)
             status = "Connected · \(target.name)"
@@ -207,7 +194,7 @@ final class AppStore: ObservableObject {
         do {
             if !password.isEmpty { try PasswordKeychain.save(password, for: target.id) }
             else { _ = try PasswordKeychain.read(for: target.id) }
-            if let old = oracle.removeValue(forKey: target.id) { await old.disconnect() }
+            await sessions.disconnect(target)
             connectedIDs.remove(target.id)
             schemaByConnection.removeValue(forKey: target.id)
             if let index = connections.firstIndex(where: { $0.id == target.id }) { connections[index] = target }
@@ -227,7 +214,7 @@ final class AppStore: ObservableObject {
 
     func removeConnection(_ target: DBConnection) async {
         guard !isBusy, target.kind != .sample else { return }
-        if let db = oracle.removeValue(forKey: target.id) { await db.disconnect() }
+        await sessions.disconnect(target)
         PasswordKeychain.delete(for: target.id)
         connections.removeAll { $0.id == target.id }
         connectedIDs.remove(target.id); results.removeValue(forKey: target.id)
@@ -240,10 +227,8 @@ final class AppStore: ObservableObject {
     }
 
     private func loadSchema(_ target: DBConnection) async throws {
-        let snapshot: [SchemaTable]
-        if target.kind == .sample, let sqlite { snapshot = try await sqlite.schema() }
-        else if let db = oracle[target.id] { snapshot = try await db.schema() }
-        else { return }
+        guard sessions.contains(target) else { return }
+        let snapshot = try await sessions.schema(for: target)
         schemaByConnection[target.id] = snapshot
         if selectedID == target.id { tables = snapshot }
     }
@@ -258,18 +243,16 @@ final class AppStore: ObservableObject {
     func run() async {
         guard let connection, canRunQuery else { return }
         let sql = sqlToRun
+        await execute(sql, on: connection)
+    }
+
+    private func execute(_ sql: String, on connection: DBConnection) async {
         isBusy = true; isRunningQuery = true; error = nil
         defer { isRunningQuery = false; isBusy = false }
         guard await prepareConnectionForQuery(connection) else { return }
         status = "A little query in progress…"
         do {
-            let output: QueryResult
-            if connection.kind == .sample, let sqlite {
-                output = try await sqlite.execute(sql)
-                try await sqlite.ensureTransaction()
-            }
-            else if let db = oracle[connection.id] { output = try await db.execute(sql) }
-            else { throw DatabaseError("먼저 연결해 주세요.") }
+            let output = try await sessions.execute(sql, on: connection)
             results[connection.id] = output
             history.insert((sql, Date()), at: 0)
             history = Array(history.prefix(50))
@@ -278,9 +261,8 @@ final class AppStore: ObservableObject {
             catch { status += " · schema refresh unavailable" }
             persist()
         } catch {
-            if connection.kind == .sample { try? await sqlite?.ensureTransaction() }
-            else if let database = oracle[connection.id] {
-                do { try await database.validateConnection() }
+            if connection.kind == .oracle && sessions.contains(connection) {
+                do { try await sessions.validate(connection) }
                 catch { await invalidateOracleSession(connection) }
             }
             self.error = error.localizedDescription
@@ -290,11 +272,11 @@ final class AppStore: ObservableObject {
 
     private func prepareConnectionForQuery(_ target: DBConnection) async -> Bool {
         if target.kind == .sample {
-            if sqlite != nil && connectedIDs.contains(target.id) { return true }
-        } else if let database = oracle[target.id] {
+            if sessions.contains(target) && connectedIDs.contains(target.id) { return true }
+        } else if sessions.contains(target) {
             status = "Checking connection…"
             do {
-                try await database.validateConnection()
+                try await sessions.validate(target)
                 connectedIDs.insert(target.id)
                 return true
             } catch {
@@ -310,7 +292,7 @@ final class AppStore: ObservableObject {
         results.removeValue(forKey: target.id)
         schemaByConnection.removeValue(forKey: target.id)
         if selectedID == target.id { tables = [] }
-        if let database = oracle.removeValue(forKey: target.id) { await database.disconnect() }
+        await sessions.disconnect(target)
     }
 
     func transaction(commit: Bool) async {
@@ -318,11 +300,7 @@ final class AppStore: ObservableObject {
         isBusy = true; error = nil
         defer { isBusy = false }
         do {
-            if connection.kind == .sample, let sqlite {
-                _ = try await sqlite.execute(commit ? "COMMIT; BEGIN" : "ROLLBACK; BEGIN")
-            } else if let db = oracle[connection.id] {
-                _ = try await (commit ? db.commit() : db.rollback())
-            }
+            try await sessions.transaction(on: connection, commit: commit)
             status = commit ? "Changes committed ✓" : "Changes rolled back ↶"
             results.removeValue(forKey: connection.id)
             try await loadSchema(connection)
@@ -338,19 +316,63 @@ final class AppStore: ObservableObject {
         Task { await run() }
     }
 
-    func loadBookmark(_ bookmark: QueryBookmark) {
-        guard !isBusy else { return }
-        if let id = bookmark.connectionID, let target = connections.first(where: { $0.id == id }) { select(target) }
-        query = bookmark.sql; selectedSQL = ""; cursorLocation = 0; persist()
-        status = "Bookmark loaded · \(bookmark.name)"
+    func canRunBookmark(_ bookmark: QueryBookmark) -> Bool {
+        !isBusy && connection != nil && bookmark.connectionID == connection?.id && SQLStatementLocator.singleStatement(in: bookmark.sql) != nil
+    }
+
+    @discardableResult
+    func focusBookmark(_ bookmark: QueryBookmark, reportErrors: Bool = true) -> Bool {
+        guard !isBusy, let connection, bookmark.connectionID == connection.id else { return false }
+        do {
+            let target = try SavedQueryFocus.resolve(bookmarkSQL: bookmark.sql, in: query, cursor: cursorLocation)
+            query = target.sql
+            selectedSQL = ""; cursorLocation = target.range.location
+            editorFocusRequest = SQLEditorFocus(range: target.range)
+        } catch {
+            if reportErrors { self.error = error.localizedDescription }
+            return false
+        }
+        error = nil
+        persist()
+        status = "Query focused · \(bookmark.name)"
+        return true
+    }
+
+    func runBookmark(_ bookmark: QueryBookmark) async {
+        guard canRunBookmark(bookmark), let connection,
+              let statement = SQLStatementLocator.singleStatement(in: bookmark.sql) else { return }
+        focusBookmark(bookmark, reportErrors: false)
+        await execute(statement.text, on: connection)
+    }
+
+    func editBookmark(_ bookmark: QueryBookmark) {
+        guard !isBusy, let connection, bookmark.connectionID == connection.id else { return }
+        editingBookmark = bookmark
+        showBookmark = true
+    }
+
+    @discardableResult
+    func assignBookmark(_ bookmark: QueryBookmark) -> Bool {
+        guard !isBusy, let connection,
+              let index = bookmarks.firstIndex(where: { $0.id == bookmark.id }),
+              unassignedBookmarks.contains(where: { $0.id == bookmark.id }) else { return false }
+        bookmarks[index].connectionID = connection.id
+        bookmarkSearch = ""; bookmarkFilter = nil
+        persist()
+        status = "Bookmark moved to \(connection.name)"
+        return true
     }
 
     @discardableResult
     func saveBookmark(_ bookmark: QueryBookmark) -> Bool {
-        guard let statement = SQLStatementLocator.singleStatement(in: bookmark.sql) else { return false }
+        guard !isBusy, let connection, bookmark.connectionID == connection.id,
+              let statement = SQLStatementLocator.singleStatement(in: bookmark.sql) else { return false }
         var saved = bookmark
         saved.sql = statement.text
-        if let index = bookmarks.firstIndex(where: { $0.id == saved.id }) { bookmarks[index] = saved }
+        if let index = bookmarks.firstIndex(where: { $0.id == saved.id }) {
+            guard bookmarks[index].connectionID == connection.id else { return false }
+            bookmarks[index] = saved
+        }
         else { bookmarks.insert(saved, at: 0) }
         persist(); showBookmark = false
         return true
@@ -363,6 +385,7 @@ final class AppStore: ObservableObject {
     func newBookmark() {
         guard canBookmarkQuery else { return }
         bookmarkDraftSQL = sqlToBookmark
+        bookmarkDraftConnectionID = connection?.id
         editingBookmark = currentBookmark
         showBookmark = true
     }
@@ -378,19 +401,13 @@ final class AppStore: ObservableObject {
     func persist() {
         if let selectedID { drafts[selectedID.uuidString] = query }
         let state = WorkspaceState(connections: connections, bookmarks: bookmarks, drafts: drafts, selectedConnection: selectedID)
-        do {
-            let encoder = JSONEncoder(); encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-            try encoder.encode(state).write(to: directory.appendingPathComponent("workspace.json"), options: .atomic)
-        } catch { self.error = "저장 실패: \(error.localizedDescription)" }
+        do { try workspaceFiles.save(state) }
+        catch { self.error = "저장 실패: \(error.localizedDescription)" }
     }
 
     func exportCSV() {
         guard let result, !result.columns.isEmpty else { return }
-        let panel = NSSavePanel()
-        panel.nameFieldStringValue = "query-result.csv"
-        panel.allowedContentTypes = [.commaSeparatedText]
-        guard panel.runModal() == .OK, let url = panel.url else { return }
-        do { try result.csv.write(to: url, atomically: true, encoding: .utf8); status = "CSV exported ✓" }
+        do { if try QueryResultExporter.export(result) { status = "CSV exported ✓" } }
         catch { self.error = error.localizedDescription }
     }
 }

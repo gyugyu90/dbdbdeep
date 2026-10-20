@@ -15,6 +15,7 @@ final class BookmarkTargetTests: XCTestCase {
         XCTAssertTrue(store.showBookmark)
         XCTAssertNil(store.editingBookmark)
         XCTAssertEqual(store.bookmarkDraftSQL, "SELECT 'middle';")
+        XCTAssertEqual(store.bookmarkDraftConnectionID, store.selectedID)
         store.cursorLocation = 0
         store.query = "SELECT 'changed';"
         XCTAssertEqual(store.bookmarkDraftSQL, "SELECT 'middle';")
@@ -26,9 +27,10 @@ final class BookmarkTargetTests: XCTestCase {
         store.cursorLocation = (store.query as NSString).range(of: "\n\n\n").location + 1
         XCTAssertEqual(store.sqlToBookmark, "SELECT 1;")
         XCTAssertTrue(store.canBookmarkQuery)
-        XCTAssertTrue(store.sqlToRun.isEmpty)
+        XCTAssertEqual(store.sqlToRun, store.sqlToBookmark)
         store.cursorLocation = store.query.utf16.count
         XCTAssertEqual(store.sqlToBookmark, "SELECT 2;")
+        XCTAssertEqual(store.sqlToRun, store.sqlToBookmark)
     }
 
     func testExistingBookmarkIsRecognizedAndOpenedForEditing() throws {
@@ -65,7 +67,7 @@ final class BookmarkTargetTests: XCTestCase {
         XCTAssertNil(store.currentBookmark)
     }
 
-    func testConnectionSpecificBookmarkTakesPrecedenceOverGlobalBookmark() throws {
+    func testOnlyCurrentConnectionBookmarkMatchesQuery() throws {
         let store = try makeStore()
         store.query = "SELECT 1;"
         let other = QueryBookmark(name: "Another connection", sql: store.query, connectionID: UUID())
@@ -74,7 +76,7 @@ final class BookmarkTargetTests: XCTestCase {
         store.bookmarks = [other]
         XCTAssertNil(store.currentBookmark)
         store.bookmarks.append(global)
-        XCTAssertEqual(store.currentBookmark?.id, global.id)
+        XCTAssertNil(store.currentBookmark)
         store.bookmarks.append(current)
         XCTAssertEqual(store.currentBookmark?.id, current.id)
     }
@@ -84,7 +86,7 @@ final class BookmarkTargetTests: XCTestCase {
         let original = store.bookmarks
         store.showBookmark = true
         for sql in ["SELECT 1; SELECT 2;", "SELECT 1; SELECT 'unfinished", "BEGIN NULL;", "-- comment only", " "] {
-            XCTAssertFalse(store.saveBookmark(QueryBookmark(name: "Invalid", sql: sql)), sql)
+            XCTAssertFalse(store.saveBookmark(QueryBookmark(name: "Invalid", sql: sql, connectionID: store.selectedID)), sql)
             XCTAssertEqual(store.bookmarks, original)
             XCTAssertTrue(store.showBookmark)
         }

@@ -2,6 +2,31 @@ import XCTest
 @testable import DBDeepCore
 
 final class SQLStatementLocatorTests: XCTestCase {
+    func testAppendingStatementPreservesDraftAndSeparatesTrailingCommentWithoutSemicolon() throws {
+        let draft = "SELECT 'keep 🌷' -- unfinished delimiter"
+        let result = try XCTUnwrap(SQLStatementLocator.appendingStatement("SELECT 2;", to: draft))
+        XCTAssertEqual(result.sql, draft + "\n;\n\nSELECT 2;")
+        XCTAssertEqual((result.sql as NSString).substring(with: result.range), "SELECT 2;")
+        XCTAssertEqual(SQLStatementLocator.statements(in: result.sql).count, 2)
+        XCTAssertEqual(SQLStatementLocator.statement(in: result.sql, atUTF16Offset: result.range.location)?.text, "SELECT 2;")
+    }
+
+    func testAppendingSupportsEmptyCommentsAndPLSQLWithoutChangingExistingText() throws {
+        for draft in ["", "-- Notes 🌷", "SELECT q'[hello; world]';\n", "BEGIN NULL; END;\n/"] {
+            let result = try XCTUnwrap(SQLStatementLocator.appendingStatement("BEGIN NULL; NULL; END;\n/", to: draft))
+            XCTAssertTrue(result.sql.hasPrefix(draft))
+            XCTAssertEqual((result.sql as NSString).substring(with: result.range), "BEGIN NULL; NULL; END;")
+            XCTAssertTrue(SQLStatementLocator.statement(in: result.sql, atUTF16Offset: result.range.location)?.text.hasSuffix("BEGIN NULL; NULL; END;") == true)
+        }
+    }
+
+    func testAppendingRejectsUnclosedDraftsAndMultiStatementBookmarks() {
+        for draft in ["SELECT 'unfinished", "SELECT 1; /* unfinished", "SELECT 1; BEGIN NULL;", "SELECT q'[unclosed"] {
+            XCTAssertNil(SQLStatementLocator.appendingStatement("SELECT 2;", to: draft), draft)
+        }
+        XCTAssertNil(SQLStatementLocator.appendingStatement("SELECT 1; SELECT 2;", to: "SELECT 3;"))
+    }
+
     func testBookmarkTargetUsesPreviousStatementInWhitespaceButNotInsideUnfinishedSQL() {
         let sql = "SELECT '한글 🌷';\n\n\nSELECT '다음';"
         let gap = (sql as NSString).range(of: "\n\n\n").location + 1
@@ -138,17 +163,17 @@ final class SQLStatementLocatorTests: XCTestCase {
         assertStatement(sql, containing: "SELECT 2", equals: "SELECT 2;")
     }
 
-    func testBlankGapHasNoExecutionTargetButIndentationUsesItsLine() {
+    func testBlankGapAndIndentationBeforeNextStatementUsePreviousStatement() {
         let sql = "SELECT 1;\n\n\n    SELECT 2;"
         let gap = (sql as NSString).range(of: "\n\n\n").location + 1
-        XCTAssertNil(SQLStatementLocator.statement(in: sql, atUTF16Offset: gap))
+        XCTAssertEqual(SQLStatementLocator.statement(in: sql, atUTF16Offset: gap)?.text, "SELECT 1;")
         let indentation = (sql as NSString).range(of: "    SELECT").location
-        XCTAssertEqual(SQLStatementLocator.statement(in: sql, atUTF16Offset: indentation)?.text, "SELECT 2;")
+        XCTAssertEqual(SQLStatementLocator.statement(in: sql, atUTF16Offset: indentation)?.text, "SELECT 1;")
     }
 
-    func testLeadingAndTrailingWhitespaceResolveToAdjacentStatement() {
+    func testLeadingWhitespaceNeverLooksAheadButTrailingWhitespaceUsesPreviousStatement() {
         let sql = "\n\n  SELECT 1;\n\n"
-        XCTAssertEqual(SQLStatementLocator.statement(in: sql, atUTF16Offset: 0)?.text, "SELECT 1;")
+        XCTAssertNil(SQLStatementLocator.statement(in: sql, atUTF16Offset: 0))
         XCTAssertEqual(SQLStatementLocator.statement(in: sql, atUTF16Offset: sql.utf16.count)?.text, "SELECT 1;")
     }
 

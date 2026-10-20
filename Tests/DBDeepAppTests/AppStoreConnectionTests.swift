@@ -4,6 +4,42 @@ import DBDeepCore
 
 @MainActor
 final class AppStoreConnectionTests: XCTestCase {
+    func testConnectionProbeClosesOnlyItsTemporarySessionAndReusesTheActiveSession() async throws {
+        let active = FakeOracleSession()
+        let probe = FakeOracleSession()
+        let store = try makeStore([active, probe])
+        let profile = try XCTUnwrap(store.connection)
+        await store.connect(profile)
+        await store.testConnection(profile, password: "")
+        XCTAssertTrue(store.isConnected)
+        XCTAssertEqual(store.connectionAttempts[profile.id]?.outcome, .succeeded)
+        store.query = "SELECT 1 FROM dual"
+        await store.run()
+        let activeActions = await active.actions
+        let probeActions = await probe.actions
+        let probePasswords = await probe.passwords
+        XCTAssertEqual(activeActions, ["connect", "schema", "validate", "execute:SELECT 1 FROM dual", "schema"])
+        XCTAssertEqual(probeActions, ["connect", "disconnect"])
+        XCTAssertEqual(probePasswords, ["test-password"])
+        XCTAssertNil(store.error)
+    }
+
+    func testFailedConnectionProbeCleansUpWithoutLosingTheActiveSession() async throws {
+        let active = FakeOracleSession()
+        let probe = FakeOracleSession(connectionError: "Cannot reach listener")
+        let store = try makeStore([active, probe])
+        let profile = try XCTUnwrap(store.connection)
+        await store.connect(profile)
+        await store.testConnection(profile, password: "test-password")
+        XCTAssertTrue(store.isConnected)
+        XCTAssertEqual(store.connectionAttempts[profile.id]?.failure?.message, "Cannot reach listener")
+        XCTAssertEqual(store.connectionAttempts[profile.id]?.outcome, .failed)
+        let probeActions = await probe.actions
+        let activeActions = await active.actions
+        XCTAssertEqual(probeActions, ["connect", "disconnect"])
+        XCTAssertEqual(activeActions, ["connect", "schema"])
+    }
+
     func testRunConnectsOfflineProfileUsingSavedPassword() async throws {
         let session = FakeOracleSession()
         let store = try makeStore([session])
