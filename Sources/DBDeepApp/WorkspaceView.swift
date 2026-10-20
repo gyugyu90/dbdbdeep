@@ -294,7 +294,15 @@ struct ConsoleView: View {
 
 struct ResultsView: View {
     @EnvironmentObject var store: AppStore
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var filter = ""
+    @State private var copiedCell: CopiedCell?
+
+    private struct CopiedCell: Equatable {
+        let row: Int
+        let column: Int
+        let id = UUID()
+    }
 
     private var displayedRows: [(offset: Int, element: [String?])] {
         Array((store.result?.rows ?? []).enumerated()).filter { filter.isEmpty || $0.element.contains { $0?.localizedCaseInsensitiveContains(filter) == true } }
@@ -352,7 +360,14 @@ struct ResultsView: View {
             .overlay {
                 if store.isRunningQuery { QueryLoadingOverlay(status: store.status) }
             }
-            .onChange(of: store.result?.id) { _, _ in filter = "" }
+            .onChange(of: store.result?.id) { _, _ in filter = ""; copiedCell = nil }
+            .onChange(of: filter) { _, _ in copiedCell = nil }
+            .onChange(of: store.isRunningQuery) { _, running in if running { copiedCell = nil } }
+            .task(id: copiedCell) {
+                guard copiedCell != nil else { return }
+                do { try await Task.sleep(for: .seconds(1.3)) } catch { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) { copiedCell = nil }
+            }
     }
 
     private func width(_ index: Int, result: QueryResult) -> CGFloat {
@@ -373,7 +388,7 @@ struct ResultsView: View {
                         HStack(spacing: 0) {
                             Text("\(row.offset + 1)").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.secondary.opacity(0.7)).frame(width: 38, height: 36)
                             ForEach(result.columns.indices, id: \.self) { index in
-                                valueCell(row.element.indices.contains(index) ? row.element[index] : nil, column: result.columns[index])
+                                valueCell(row.element.indices.contains(index) ? row.element[index] : nil, column: result.columns[index], row: row.offset, index: index)
                                     .frame(width: width(index, result: result), height: 36, alignment: .leading)
                                     .overlay(alignment: .trailing) { Theme.line.opacity(0.6).frame(width: 1) }
                             }
@@ -397,7 +412,7 @@ struct ResultsView: View {
         }
     }
 
-    private func valueCell(_ value: String?, column: String) -> some View {
+    private func valueCell(_ value: String?, column: String, row: Int, index: Int) -> some View {
         Group {
             if let value {
                 if column.lowercased() == "status" {
@@ -414,7 +429,29 @@ struct ResultsView: View {
                 }
             } else { Text("NULL").font(.system(size: 10, design: .monospaced)).italic().foregroundStyle(Theme.secondary.opacity(0.65)) }
         }.padding(.horizontal, 12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .contentShape(Rectangle()).onTapGesture(count: 2) { NSPasteboard.general.clearContents(); NSPasteboard.general.setString(value ?? "NULL", forType: .string) }
+            .contentShape(Rectangle()).onTapGesture(count: 2) {
+                NSPasteboard.general.clearContents()
+                guard NSPasteboard.general.setString(value ?? "NULL", forType: .string) else { return }
+                withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
+                    copiedCell = CopiedCell(row: row, column: index)
+                }
+            }
+            .overlay(alignment: .trailing) {
+                if copiedCell?.row == row, copiedCell?.column == index {
+                    HStack(spacing: 3) {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.green)
+                        Text("Copied").foregroundStyle(Theme.ink)
+                    }.font(.system(size: 9, weight: .semibold, design: .rounded))
+                        .padding(.horizontal, 6).padding(.vertical, 4)
+                        .background(Theme.surface, in: Capsule())
+                        .overlay(Capsule().stroke(Theme.green.opacity(0.35), lineWidth: 1))
+                        .shadow(color: Theme.green.opacity(0.12), radius: 3, y: 1)
+                        .padding(.trailing, 4)
+                        .transition(.opacity)
+                        .accessibilityElement(children: .ignore).accessibilityLabel("Copied")
+                        .allowsHitTesting(false)
+                }
+            }
             .help(value ?? "NULL")
     }
 }
