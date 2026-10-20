@@ -1,4 +1,5 @@
 import AppKit
+import DBDeepCore
 import SwiftUI
 
 struct SQLTextEditor: NSViewRepresentable {
@@ -6,11 +7,15 @@ struct SQLTextEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var selection: String
     @Binding var cursorLocation: Int
+    var tables: [SchemaTable]
+    var connectionKind: DBConnection.Kind
 
-    init(text: Binding<String>, selection: Binding<String>, cursorLocation: Binding<Int> = .constant(0)) {
+    init(text: Binding<String>, selection: Binding<String>, cursorLocation: Binding<Int> = .constant(0), tables: [SchemaTable] = [], connectionKind: DBConnection.Kind = .oracle) {
         _text = text
         _selection = selection
         _cursorLocation = cursorLocation
+        self.tables = tables
+        self.connectionKind = connectionKind
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -20,7 +25,11 @@ struct SQLTextEditor: NSViewRepresentable {
         let layout = NSLayoutManager()
         let container = NSTextContainer(containerSize: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         storage.addLayoutManager(layout); layout.addTextContainer(container)
-        let view = NSTextView(frame: .zero, textContainer: container)
+        let view = SQLCompletionTextView(frame: .zero, textContainer: container)
+        view.onDismissCompletion = { [weak coordinator = context.coordinator] in coordinator?.dismissCompletion() }
+        view.onRequestCompletion = { [weak coordinator = context.coordinator, weak view] in
+            if let view { coordinator?.updateCompletion(view, explicit: true) }
+        }
         view.isRichText = false
         view.isAutomaticQuoteSubstitutionEnabled = false
         view.isAutomaticDashSubstitutionEnabled = false
@@ -56,24 +65,38 @@ struct SQLTextEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
+        if context.coordinator.parent.tables != tables || context.coordinator.parent.connectionKind != connectionKind {
+            context.coordinator.dismissCompletion()
+        }
         context.coordinator.parent = self
         guard let view = scroll.documentView as? NSTextView else { return }
         let appearance = NSAppearance(named: colorScheme == .dark ? .darkAqua : .aqua)
         let appearanceChanged = scroll.appearance?.name != appearance?.name
         scroll.appearance = appearance
         if view.string != text {
+            context.coordinator.dismissCompletion()
             view.string = text
             view.setSelectedRange(NSRange(location: 0, length: 0))
             view.undoManager?.removeAllActions()
             context.coordinator.highlight(view)
         } else if appearanceChanged {
+            context.coordinator.dismissCompletion()
             context.coordinator.highlight(view)
         }
         scroll.verticalRulerView?.needsDisplay = true
     }
 
+    static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
+        coordinator.dismissCompletion()
+    }
+
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: SQLTextEditor
+        private var completionWork: DispatchWorkItem?
+        private var completionPanel: SQLCompletionPanel?
+        private(set) var completion: SQLCompletionResult?
+        private(set) var selectedCompletion = 0
+        private var applyingCompletion = false
         init(_ parent: SQLTextEditor) { self.parent = parent }
         func textDidChange(_ notification: Notification) {
             guard let view = notification.object as? NSTextView else { return }
@@ -81,10 +104,83 @@ struct SQLTextEditor: NSViewRepresentable {
             highlight(view)
             updateSelection(view)
             view.enclosingScrollView?.verticalRulerView?.needsDisplay = true
+            if !applyingCompletion { scheduleCompletion(view) }
         }
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let view = notification.object as? NSTextView else { return }
             updateSelection(view)
+            dismissCompletion()
+        }
+
+        func textDidEndEditing(_ notification: Notification) { dismissCompletion() }
+
+        func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+            if commandSelector == #selector(NSResponder.complete(_:)) {
+                updateCompletion(textView, explicit: true)
+                return true
+            }
+            guard let completion, !textView.hasMarkedText() else { return false }
+            switch commandSelector {
+            case #selector(NSResponder.moveDown(_:)):
+                selectedCompletion = min(selectedCompletion + 1, completion.candidates.count - 1)
+                showCompletion(textView)
+            case #selector(NSResponder.moveUp(_:)):
+                selectedCompletion = max(0, selectedCompletion - 1)
+                showCompletion(textView)
+            case #selector(NSResponder.insertTab(_:)), #selector(NSResponder.insertNewline(_:)):
+                acceptCompletion(selectedCompletion, in: textView)
+            case #selector(NSResponder.cancelOperation(_:)):
+                dismissCompletion()
+            default:
+                return false
+            }
+            return true
+        }
+
+        private func scheduleCompletion(_ view: NSTextView) {
+            dismissCompletion()
+            let work = DispatchWorkItem { [weak self, weak view] in
+                if let view { self?.updateCompletion(view) }
+            }
+            completionWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
+        }
+
+        func updateCompletion(_ view: NSTextView, explicit: Bool = false) {
+            dismissCompletion()
+            guard !view.hasMarkedText(), view.selectedRange().length == 0 else { return }
+            completion = SQLCompletionEngine(tables: parent.tables, kind: parent.connectionKind)
+                .completions(in: view.string, atUTF16Offset: view.selectedRange().location, explicit: explicit)
+            selectedCompletion = 0
+            showCompletion(view)
+        }
+
+        private func showCompletion(_ view: NSTextView) {
+            guard let completion, view.window?.firstResponder === view, view.window?.isKeyWindow == true else { return }
+            let panel = completionPanel ?? SQLCompletionPanel()
+            completionPanel = panel
+            panel.show(completion, selected: selectedCompletion, for: view, choose: { [weak self, weak view] index in
+                if let view { self?.acceptCompletion(index, in: view) }
+            }, onDismiss: { [weak self] in self?.dismissCompletion() })
+        }
+
+        func acceptCompletion(_ index: Int, in view: NSTextView) {
+            guard let completion, completion.candidates.indices.contains(index), !view.hasMarkedText() else { return }
+            let insertion = completion.candidates[index].insertion
+            let range = completion.range
+            dismissCompletion()
+            guard NSMaxRange(range) <= (view.string as NSString).length,
+                  view.shouldChangeText(in: range, replacementString: insertion) else { return }
+            applyingCompletion = true
+            defer { applyingCompletion = false }
+            view.insertText(insertion, replacementRange: range)
+        }
+
+        func dismissCompletion() {
+            completionWork?.cancel()
+            completionWork = nil
+            completion = nil
+            completionPanel?.dismiss()
         }
 
         private func updateSelection(_ view: NSTextView) {

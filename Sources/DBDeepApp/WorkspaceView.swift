@@ -277,7 +277,7 @@ struct ConsoleView: View {
                 IconButton(icon: "arrow.uturn.backward", help: "Roll back changes") { Task { await store.transaction(commit: false) } }.disabled(store.isBusy || !store.isConnected)
                 CapsuleTag(text: "MANUAL COMMIT", color: "mint").padding(.leading, 3)
             }.padding(.horizontal, 16).frame(height: 54)
-            SQLTextEditor(text: $store.query, selection: $store.selectedSQL, cursorLocation: $store.cursorLocation)
+            SQLTextEditor(text: $store.query, selection: $store.selectedSQL, cursorLocation: $store.cursorLocation, tables: store.tables, connectionKind: store.connection?.kind ?? .oracle)
             HStack(spacing: 5) {
                 Image(systemName: "info.circle").font(.system(size: 9))
                 Text(store.selectedSQL.isEmpty ? (store.sqlToRun.isEmpty ? "Place the cursor in a SQL statement" : "Statement at cursor will run · ⌘↵") : "Only selected SQL will run · ⌘↵")

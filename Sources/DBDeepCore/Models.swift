@@ -58,7 +58,7 @@ public struct QueryBookmark: Identifiable, Codable, Equatable, Sendable {
     }
 }
 
-public struct SchemaColumn: Identifiable, Sendable {
+public struct SchemaColumn: Identifiable, Equatable, Sendable {
     public var id: String { name }
     public let name: String
     public let type: String
@@ -69,7 +69,7 @@ public struct SchemaColumn: Identifiable, Sendable {
     }
 }
 
-public struct SchemaTable: Identifiable, Sendable {
+public struct SchemaTable: Identifiable, Equatable, Sendable {
     public var id: String { name }
     public let name: String
     public let isView: Bool
