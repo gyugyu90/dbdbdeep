@@ -10,10 +10,11 @@ struct WorkspaceView: View {
             titlebar
             Rectangle().fill(Theme.line).frame(height: 1)
             GeometryReader { geometry in
+                let maximumSidebarWidth = max(250, geometry.size.width / 3)
                 HSplitView {
-                    ConnectionSidebar().frame(minWidth: 210, idealWidth: 240, maxWidth: max(210, geometry.size.width / 3))
+                    ConnectionSidebar().frame(minWidth: 210, idealWidth: 240, maxWidth: maximumSidebarWidth)
                     ConsoleView().frame(minWidth: 450, maxWidth: .infinity)
-                    if store.showBookmarks { BookmarkSidebar().frame(minWidth: 250, idealWidth: 285, maxWidth: 310) }
+                    if store.showBookmarks { BookmarkSidebar().frame(minWidth: 250, idealWidth: 285, maxWidth: maximumSidebarWidth) }
                 }
             }
             statusbar
@@ -271,7 +272,9 @@ struct ConsoleView: View {
                     .help(store.selectedSQL.isEmpty ? "Run the statement at the cursor · ⌘↵" : "Run only the selected SQL · ⌘↵")
                 Text("⌘ ↵").font(.system(size: 10)).foregroundStyle(Theme.secondary).padding(.leading, 2)
                 Spacer(minLength: 0)
-                IconButton(icon: "bookmark", help: "Bookmark this query · ⌘D") { store.newBookmark() }.keyboardShortcut("d", modifiers: .command)
+                let bookmark = store.currentBookmark
+                IconButton(icon: bookmark == nil ? "bookmark" : "bookmark.fill", help: bookmark.map { "Edit bookmark · \($0.name) · ⌘D" } ?? "Bookmark the statement at or before the cursor · ⌘D") { store.newBookmark() }
+                    .keyboardShortcut("d", modifiers: .command).disabled(!store.canBookmarkQuery)
                 Rectangle().fill(Theme.line).frame(width: 1, height: 17).padding(.horizontal, 3)
                 IconButton(icon: "checkmark.circle", help: "Commit changes") { Task { await store.transaction(commit: true) } }.disabled(store.isBusy || !store.isConnected)
                 IconButton(icon: "arrow.uturn.backward", help: "Roll back changes") { Task { await store.transaction(commit: false) } }.disabled(store.isBusy || !store.isConnected)
@@ -424,7 +427,7 @@ struct BookmarkSidebar: View {
                 Text("Your little library").font(.system(size: 16, weight: .semibold, design: .rounded)).tracking(-0.3)
                 Text("🔖").font(.system(size: 15))
                 Spacer(minLength: 0)
-                IconButton(icon: "plus", help: "Save a bookmark") { store.newBookmark() }
+                IconButton(icon: "plus", help: "Save a bookmark") { store.newBookmark() }.disabled(!store.canBookmarkQuery)
             }.padding(.horizontal, 20).padding(.top, 28)
             Text("Good queries deserve a cozy home.").font(.system(size: 10)).foregroundStyle(Theme.secondary).padding(.horizontal, 20).padding(.top, 7).padding(.bottom, 23)
             SearchField(placeholder: "Find a saved query…", text: $store.bookmarkSearch).padding(.horizontal, 17)
@@ -459,7 +462,7 @@ struct BookmarkSidebar: View {
                         }.foregroundStyle(Theme.secondary).frame(maxWidth: .infinity).frame(height: 43)
                             .background(Theme.surface.opacity(0.6), in: RoundedRectangle(cornerRadius: 9))
                             .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Theme.line, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
-                    }.buttonStyle(.plain)
+                    }.buttonStyle(.plain).disabled(!store.canBookmarkQuery)
                 }.padding(.horizontal, 17).padding(.bottom, 12)
             }
             Spacer(minLength: 0)

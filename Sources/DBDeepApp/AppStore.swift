@@ -24,6 +24,7 @@ final class AppStore: ObservableObject {
     @Published var showConnectionDetails = false
     @Published var showBookmark = false
     @Published var editingBookmark: QueryBookmark?
+    @Published private(set) var bookmarkDraftSQL = ""
     @Published var schemaSearch = ""
     @Published var bookmarkSearch = ""
     @Published var bookmarkFilter: String?
@@ -46,6 +47,13 @@ final class AppStore: ObservableObject {
     var isConnected: Bool { selectedID.map { connectedIDs.contains($0) } ?? false }
     var sqlToRun: String { selectedSQL.isEmpty ? SQLStatementLocator.statement(in: query, atUTF16Offset: cursorLocation)?.text ?? "" : selectedSQL }
     var canRunQuery: Bool { connection != nil && !isBusy && !sqlToRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    var sqlToBookmark: String { SQLStatementLocator.statementAtOrBefore(in: query, atUTF16Offset: cursorLocation)?.text ?? "" }
+    var canBookmarkQuery: Bool { !isBusy && !sqlToBookmark.isEmpty }
+    var currentBookmark: QueryBookmark? {
+        guard let key = SQLStatementLocator.comparisonKey(for: sqlToBookmark) else { return nil }
+        let matching = bookmarks.filter { ($0.connectionID == nil || $0.connectionID == selectedID) && SQLStatementLocator.comparisonKey(for: $0.sql) == key }
+        return matching.first { $0.connectionID == selectedID } ?? matching.first
+    }
     var filteredTables: [SchemaTable] { tables.filter { schemaSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(schemaSearch) } }
     var filteredBookmarks: [QueryBookmark] {
         bookmarks.filter { (bookmarkSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(bookmarkSearch) || $0.sql.localizedCaseInsensitiveContains(bookmarkSearch)) && (bookmarkFilter == nil || $0.color == bookmarkFilter) }
@@ -337,17 +345,27 @@ final class AppStore: ObservableObject {
         status = "Bookmark loaded · \(bookmark.name)"
     }
 
-    func saveBookmark(_ bookmark: QueryBookmark) {
-        if let index = bookmarks.firstIndex(where: { $0.id == bookmark.id }) { bookmarks[index] = bookmark }
-        else { bookmarks.insert(bookmark, at: 0) }
+    @discardableResult
+    func saveBookmark(_ bookmark: QueryBookmark) -> Bool {
+        guard let statement = SQLStatementLocator.singleStatement(in: bookmark.sql) else { return false }
+        var saved = bookmark
+        saved.sql = statement.text
+        if let index = bookmarks.firstIndex(where: { $0.id == saved.id }) { bookmarks[index] = saved }
+        else { bookmarks.insert(saved, at: 0) }
         persist(); showBookmark = false
+        return true
     }
 
     func removeBookmark(_ bookmark: QueryBookmark) {
         bookmarks.removeAll { $0.id == bookmark.id }; persist()
     }
 
-    func newBookmark() { editingBookmark = nil; showBookmark = true }
+    func newBookmark() {
+        guard canBookmarkQuery else { return }
+        bookmarkDraftSQL = sqlToBookmark
+        editingBookmark = currentBookmark
+        showBookmark = true
+    }
     func newConnection() { editingConnection = nil; showConnection = true }
 
     func queryChanged() {

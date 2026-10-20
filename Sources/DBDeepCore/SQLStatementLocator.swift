@@ -6,6 +6,37 @@ public struct SQLStatement: Equatable, Sendable {
 }
 
 public enum SQLStatementLocator {
+    public static func statementAtOrBefore(in sql: String, atUTF16Offset offset: Int) -> SQLStatement? {
+        let source = sql as NSString
+        let location = min(max(0, offset), source.length)
+        let statements = statements(in: sql)
+        if let current = statements.first(where: { NSLocationInRange(location, $0.range) }) { return current }
+        guard let previous = statements.last(where: { NSMaxRange($0.range) <= location }) else { return nil }
+        let gap = source.substring(with: NSRange(location: NSMaxRange(previous.range), length: location - NSMaxRange(previous.range)))
+        return tokenize(gap).allSatisfy { $0.kind == .semicolon || $0.kind == .slash } ? previous : nil
+    }
+
+    public static func singleStatement(in sql: String) -> SQLStatement? {
+        let statements = statements(in: sql)
+        guard statements.count == 1, let statement = statements.first else { return nil }
+        let containsAllTokens = tokenize(sql).allSatisfy { token in
+            token.kind == .semicolon || token.kind == .slash ||
+                (token.range.location >= statement.range.location && NSMaxRange(token.range) <= NSMaxRange(statement.range))
+        }
+        return containsAllTokens ? statement : nil
+    }
+
+    public static func comparisonKey(for sql: String) -> [String]? {
+        guard let statement = singleStatement(in: sql) else { return nil }
+        let source = statement.text as NSString
+        var tokens = tokenize(statement.text)
+        if tokens.last?.kind == .semicolon { tokens.removeLast() }
+        return tokens.map { token in
+            if let word = token.word { return "word:" + word }
+            return "symbol:" + source.substring(with: token.range)
+        }
+    }
+
     public static func statement(in sql: String, atUTF16Offset offset: Int) -> SQLStatement? {
         let source = sql as NSString
         let location = min(max(0, offset), source.length)

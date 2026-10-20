@@ -2,6 +2,40 @@ import XCTest
 @testable import DBDeepCore
 
 final class SQLStatementLocatorTests: XCTestCase {
+    func testBookmarkTargetUsesPreviousStatementInWhitespaceButNotInsideUnfinishedSQL() {
+        let sql = "SELECT '한글 🌷';\n\n\nSELECT '다음';"
+        let gap = (sql as NSString).range(of: "\n\n\n").location + 1
+        XCTAssertEqual(SQLStatementLocator.statementAtOrBefore(in: sql, atUTF16Offset: gap)?.text, "SELECT '한글 🌷';")
+        let unfinished = "SELECT 1; SELECT 'unfinished"
+        XCTAssertNil(SQLStatementLocator.statementAtOrBefore(in: unfinished, atUTF16Offset: unfinished.utf16.count))
+        XCTAssertNil(SQLStatementLocator.statementAtOrBefore(in: "  SELECT 1;", atUTF16Offset: 0))
+        let trailing = "SELECT 1;\n-- trailing note"
+        XCTAssertEqual(SQLStatementLocator.statementAtOrBefore(in: trailing, atUTF16Offset: trailing.utf16.count)?.text, "SELECT 1;")
+    }
+
+    func testSingleStatementRejectsIncompleteOrMultipleTrailingStatements() {
+        for sql in ["SELECT 1; SELECT 2;", "SELECT 1; SELECT 'unfinished", "SELECT 1; /* unfinished", "BEGIN NULL;", "-- comment"] {
+            XCTAssertNil(SQLStatementLocator.singleStatement(in: sql), sql)
+        }
+        for sql in ["SELECT q'[a;b]' FROM dual; -- trailing note", "BEGIN NULL; NULL; END;\n/", "SELECT 1;;"] {
+            XCTAssertNotNil(SQLStatementLocator.singleStatement(in: sql), sql)
+        }
+    }
+
+    func testStatementComparisonIgnoresFormattingCommentsAndFinalDelimiter() {
+        XCTAssertEqual(SQLStatementLocator.comparisonKey(for: "-- saved\nSELECT id, name FROM customers;"),
+            SQLStatementLocator.comparisonKey(for: " select ID,\n NAME /* format */ from CUSTOMERS "))
+        XCTAssertEqual(SQLStatementLocator.comparisonKey(for: "BEGIN NULL; END;\n/"),
+            SQLStatementLocator.comparisonKey(for: "begin null; end;"))
+    }
+
+    func testStatementComparisonPreservesLiteralValuesAndQuotedIdentifierCase() {
+        XCTAssertNotEqual(SQLStatementLocator.comparisonKey(for: "SELECT 'A B';"), SQLStatementLocator.comparisonKey(for: "SELECT 'a b';"))
+        XCTAssertNotEqual(SQLStatementLocator.comparisonKey(for: "SELECT \"Name\" FROM customers;"), SQLStatementLocator.comparisonKey(for: "SELECT \"NAME\" FROM customers;"))
+        XCTAssertNotEqual(SQLStatementLocator.comparisonKey(for: "SELECT a b;"), SQLStatementLocator.comparisonKey(for: "SELECT ab;"))
+        XCTAssertNil(SQLStatementLocator.comparisonKey(for: "SELECT 1; SELECT 2;"))
+    }
+
     func testCursorChoosesOnlyContainingStatement() {
         let sql = "SELECT 1 FROM dual;\n\nUPDATE notes\nSET content = 'hello';\n\nDELETE FROM notes;"
         assertStatement(sql, containing: "content", equals: "UPDATE notes\nSET content = 'hello';")

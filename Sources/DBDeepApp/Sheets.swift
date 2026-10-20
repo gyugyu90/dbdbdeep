@@ -189,6 +189,7 @@ struct BookmarkSheet: View {
     @State private var selectedSQL = ""
     @State private var connectionID: UUID?
     private let emojis = ["✨", "🌷", "🧺", "⚡️", "🍑", "🌱", "☁️", "🪄", "📊", "✏️", "🧸", "🐳"]
+    private var hasSingleStatement: Bool { SQLStatementLocator.singleStatement(in: sql) != nil }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
@@ -241,6 +242,8 @@ struct BookmarkSheet: View {
                 Text("SQL").font(.system(size: 11, weight: .medium))
                 SQLTextEditor(text: $sql, selection: $selectedSQL).frame(height: 165)
                     .clipShape(RoundedRectangle(cornerRadius: 9)).overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.line, lineWidth: 1))
+                Text("One SQL statement or PL/SQL block per bookmark.")
+                    .font(.system(size: 10)).foregroundStyle(hasSingleStatement || sql.isEmpty ? Theme.secondary : Theme.accent("peach"))
             }
             HStack {
                 Text("Loading a bookmark never runs it.").font(.system(size: 10)).foregroundStyle(Theme.secondary)
@@ -248,15 +251,16 @@ struct BookmarkSheet: View {
                 Button("Cancel") { dismiss() }.buttonStyle(.plain).font(.system(size: 12)).foregroundStyle(Theme.secondary).keyboardShortcut(.cancelAction)
                 SoftButton(title: "Save bookmark", icon: "bookmark.fill", prominent: true) {
                     store.saveBookmark(QueryBookmark(id: bookmark?.id ?? UUID(), name: name.trimmingCharacters(in: .whitespacesAndNewlines), emoji: emoji.isEmpty ? "✨" : emoji, color: color, sql: sql, connectionID: connectionID))
-                }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty).keyboardShortcut(.defaultAction)
+                }.disabled(name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !hasSingleStatement).keyboardShortcut(.defaultAction)
             }
         }.padding(28).frame(width: 500).background(Theme.canvas).foregroundStyle(Theme.ink)
             .onAppear {
                 name = bookmark?.name ?? ""
                 emoji = bookmark?.emoji ?? "✨"
                 color = bookmark?.color ?? "lavender"
-                sql = bookmark?.sql ?? (store.selectedSQL.isEmpty ? store.query : store.selectedSQL)
-                connectionID = bookmark?.connectionID ?? store.selectedID
+                sql = bookmark?.sql ?? store.bookmarkDraftSQL
+                if let bookmark { connectionID = bookmark.connectionID }
+                else { connectionID = store.selectedID }
             }
     }
 }

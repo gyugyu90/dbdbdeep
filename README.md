@@ -51,7 +51,7 @@ If connecting fails, **Connection details** shows the attempted settings, progre
 
 ## Save favorite queries
 
-Press `⌘D` to bookmark SQL with a name, color, emoji, and optional connection. Click a bookmark to load it; it won't run automatically. Search or filter your bookmarks, and right-click to edit, copy, or delete them.
+Press `⌘D` to bookmark the statement at the cursor, or the previous statement when the cursor is between queries. Each bookmark holds one SQL statement or PL/SQL block, with a name, color, emoji, and optional connection. A filled bookmark button means it's already saved; click it to edit. Click a library bookmark to load it without running it, or right-click to edit, copy, or delete it.
 
 Connections, bookmarks, and query drafts are saved locally. History and results last for the current app session.
 
@@ -59,4 +59,4 @@ Connections, bookmarks, and query drafts are saved locally. History and results 
 
 Choose **View → Appearance → Use System Setting**, **Light**, or **Dark**. The default follows macOS, and your choice is remembered. Dark mode gives the mascot and Dock icon little pink devil horns.
 
-Drag the panel dividers to resize the workspace. The left sidebar can expand to about one-third of the window. Toggle bookmarks with the top-right sidebar button, and double-click the header to maximize or restore the window.
+Drag the panel dividers to resize the workspace. Both sidebars can expand to about one-third of the window. Toggle bookmarks with the top-right sidebar button, and double-click the header to maximize or restore the window.
