@@ -297,6 +297,14 @@ struct ResultsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var filter = ""
     @State private var copiedCell: CopiedCell?
+    @State private var grid = ResultGridState()
+    @State private var columnDrag: ColumnDrag?
+
+    private struct ColumnDrag {
+        let source: Int
+        let target: Int
+        let after: Bool
+    }
 
     private struct CopiedCell: Equatable {
         let row: Int
@@ -305,7 +313,7 @@ struct ResultsView: View {
     }
 
     private var displayedRows: [(offset: Int, element: [String?])] {
-        Array((store.result?.rows ?? []).enumerated()).filter { filter.isEmpty || $0.element.contains { $0?.localizedCaseInsensitiveContains(filter) == true } }
+        store.result.map { grid.rows(in: $0, filter: filter) } ?? []
     }
 
     var body: some View {
@@ -321,7 +329,7 @@ struct ResultsView: View {
                 Spacer()
                 if let result = store.result {
                     Label(String(format: "%.0f ms", result.elapsed * 1000), systemImage: "clock").font(.system(size: 9)).foregroundStyle(Theme.secondary)
-                    IconButton(icon: "square.and.arrow.up", help: "Export displayed result as CSV") { store.exportCSV() }.disabled(result.columns.isEmpty)
+                    IconButton(icon: "square.and.arrow.up", help: "Export all fetched rows as CSV") { store.exportCSV() }.disabled(result.columns.isEmpty)
                 }
             }.padding(.horizontal, 17).frame(height: 43)
             if let error = store.error {
@@ -360,9 +368,13 @@ struct ResultsView: View {
             .overlay {
                 if store.isRunningQuery { QueryLoadingOverlay(status: store.status) }
             }
-            .onChange(of: store.result?.id) { _, _ in filter = ""; copiedCell = nil }
+            .onChange(of: store.result?.id, initial: true) { _, _ in
+                filter = ""; copiedCell = nil
+                columnDrag = nil
+                grid.reset(for: store.result)
+            }
             .onChange(of: filter) { _, _ in copiedCell = nil }
-            .onChange(of: store.isRunningQuery) { _, running in if running { copiedCell = nil } }
+            .onChange(of: store.isRunningQuery) { _, running in if running { copiedCell = nil; columnDrag = nil } }
             .task(id: copiedCell) {
                 guard copiedCell != nil else { return }
                 do { try await Task.sleep(for: .seconds(1.3)) } catch { return }
@@ -371,6 +383,7 @@ struct ResultsView: View {
     }
 
     private func width(_ index: Int, result: QueryResult) -> CGFloat {
+        if let width = grid.columnWidths[index] { return CGFloat(width) }
         let name = result.columns[index].lowercased()
         if name == "id" || name.hasSuffix("_id") { return 64 }
         if name.contains("email") { return 210 }
@@ -380,36 +393,63 @@ struct ResultsView: View {
     }
 
     private func resultTable(_ result: QueryResult) -> some View {
-        GeometryReader { geometry in
+        let rows = displayedRows
+        let columns = grid.columns(in: result)
+        return GeometryReader { geometry in
             ScrollView([.horizontal, .vertical]) {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                 Section {
-                    ForEach(displayedRows, id: \.offset) { row in
+                    ForEach(Array(rows.enumerated()), id: \.element.offset) { position, row in
                         HStack(spacing: 0) {
-                            Text("\(row.offset + 1)").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.secondary.opacity(0.7)).frame(width: 38, height: 36)
-                            ForEach(result.columns.indices, id: \.self) { index in
+                            Text("\(position + 1)").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.secondary.opacity(0.7)).frame(width: 38, height: 36)
+                            ForEach(columns, id: \.self) { index in
                                 valueCell(row.element.indices.contains(index) ? row.element[index] : nil, column: result.columns[index], row: row.offset, index: index)
                                     .frame(width: width(index, result: result), height: 36, alignment: .leading)
                                     .overlay(alignment: .trailing) { Theme.line.opacity(0.6).frame(width: 1) }
                             }
-                        }.background(row.offset.isMultiple(of: 2) ? Theme.surface : Theme.canvas)
+                        }.background(position.isMultiple(of: 2) ? Theme.surface : Theme.canvas)
                             .overlay(alignment: .bottom) { Theme.line.opacity(0.75).frame(height: 1) }
                     }
                 } header: {
                     HStack(spacing: 0) {
                         Text("#").font(.system(size: 10)).foregroundStyle(Theme.secondary).frame(width: 38, height: 34)
-                        ForEach(result.columns.indices, id: \.self) { index in
-                            HStack(spacing: 6) {
-                                Text(result.columns[index].lowercased() == "id" ? "⌑" : "≡").foregroundStyle(Theme.secondary)
-                                Text(result.columns[index]).font(.system(size: 10, weight: .medium)).lineLimit(1)
-                            }.padding(.leading, 12).frame(width: width(index, result: result), height: 34, alignment: .leading)
-                                .overlay(alignment: .trailing) { Theme.line.frame(width: 1) }
+                        ForEach(columns, id: \.self) { index in
+                            ResultColumnHeader(name: result.columns[index], width: width(index, result: result),
+                                sortDirection: grid.sortColumn == index ? grid.sortDirection : nil,
+                                isDragging: columnDrag?.source == index,
+                                dropAfter: columnDrag?.target == index && columnDrag?.source != index ? columnDrag?.after : nil,
+                                onSort: { copiedCell = nil; grid.toggleSort(column: index) },
+                                onResize: { grid.resize(column: index, width: Double($0)) },
+                                onDragChanged: { location in
+                                    copiedCell = nil
+                                    if let target = columnDropTarget(at: location, result: result) {
+                                        columnDrag = ColumnDrag(source: index, target: target.column, after: target.after)
+                                    }
+                                },
+                                onDragEnded: { location in
+                                    if let target = columnDropTarget(at: location, result: result) {
+                                        grid.moveColumn(index, to: target.column, after: target.after)
+                                    }
+                                    columnDrag = nil
+                                })
                         }
-                    }.background(Theme.sidebar).overlay(alignment: .bottom) { Theme.line.frame(height: 1) }
+                    }.coordinateSpace(name: "resultColumns")
+                        .background(Theme.sidebar).overlay(alignment: .bottom) { Theme.line.frame(height: 1) }
                 }
                 }.frame(minWidth: geometry.size.width, minHeight: geometry.size.height, alignment: .topLeading)
             }
         }
+    }
+
+    private func columnDropTarget(at location: CGFloat, result: QueryResult) -> (column: Int, after: Bool)? {
+        let columns = grid.columns(in: result)
+        var leading: CGFloat = 38
+        for column in columns {
+            let trailing = leading + width(column, result: result)
+            if location < trailing { return (column, location > (leading + trailing) / 2) }
+            leading = trailing
+        }
+        return columns.last.map { ($0, true) }
     }
 
     private func valueCell(_ value: String?, column: String, row: Int, index: Int) -> some View {
@@ -428,7 +468,7 @@ struct ResultsView: View {
                     Text(value).font(.system(size: 11, design: column.lowercased() == "id" ? .monospaced : .default)).lineLimit(1)
                 }
             } else { Text("NULL").font(.system(size: 10, design: .monospaced)).italic().foregroundStyle(Theme.secondary.opacity(0.65)) }
-        }.padding(.horizontal, 12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        }.lineLimit(1).padding(.horizontal, 12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
             .contentShape(Rectangle()).onTapGesture(count: 2) {
                 NSPasteboard.general.clearContents()
                 guard NSPasteboard.general.setString(value ?? "NULL", forType: .string) else { return }

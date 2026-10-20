@@ -47,6 +47,7 @@ If connecting fails, **Connection details** shows the attempted settings, progre
 - Before running SQL, the app checks the session and reconnects if needed. If the connection fails during execution, the query is not automatically repeated; check the outcome before running it again.
 - Changes use **manual commit**. Press `⌘⇧↵` to commit, or choose **Query → Rollback changes** to undo uncommitted changes. Oracle DDL follows its [implicit commit rules](https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/COMMIT.html).
 - Results show up to 1,000 rows. Filter the fetched rows, double-click a value to copy it, or press `⌘⇧E` to export them as CSV. Export includes all fetched rows, regardless of the filter; long Oracle text values are previews.
+- Click a column name to toggle ascending/descending sorting for that column. Drag its right edge to resize it, or its left handle to reorder columns. These adjustments apply to fetched results and reset with each new result; CSV export keeps the original query order.
 - Open **History** to reload a recent query without running it.
 
 ## Save favorite queries
