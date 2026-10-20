@@ -345,6 +345,10 @@ struct ResultsView: View {
                 Spacer()
             }
         }.background(Theme.surface).overlay(alignment: .top) { Theme.line.frame(height: 1) }
+            .disabled(store.isRunningQuery)
+            .overlay {
+                if store.isRunningQuery { QueryLoadingOverlay(status: store.status) }
+            }
             .onChange(of: store.result?.id) { _, _ in filter = "" }
     }
 
@@ -385,7 +389,7 @@ struct ResultsView: View {
                         }
                     }.background(Theme.sidebar).overlay(alignment: .bottom) { Theme.line.frame(height: 1) }
                 }
-                }.frame(minWidth: geometry.size.width, alignment: .leading)
+                }.frame(minWidth: geometry.size.width, minHeight: geometry.size.height, alignment: .topLeading)
             }
         }
     }

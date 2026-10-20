@@ -14,6 +14,7 @@ final class AppStore: ObservableObject {
     @Published var results: [UUID: QueryResult] = [:]
     @Published var connectedIDs: Set<UUID> = []
     @Published var isBusy = false
+    @Published private(set) var isRunningQuery = false
     @Published var error: String?
     @Published var status = "Ready when you are"
     @Published var showConnection = false
@@ -249,8 +250,8 @@ final class AppStore: ObservableObject {
     func run() async {
         guard let connection, canRunQuery else { return }
         let sql = sqlToRun
-        isBusy = true; error = nil
-        defer { isBusy = false }
+        isBusy = true; isRunningQuery = true; error = nil
+        defer { isRunningQuery = false; isBusy = false }
         guard await prepareConnectionForQuery(connection) else { return }
         status = "A little query in progress…"
         do {

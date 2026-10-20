@@ -89,6 +89,7 @@ final class AppStoreConnectionTests: XCTestCase {
         XCTAssertTrue(store.history.isEmpty)
         XCTAssertEqual(store.connectionAttempts[store.selectedID!]?.outcome, .failed)
         XCTAssertEqual(store.query, "DELETE FROM notes")
+        XCTAssertFalse(store.isRunningQuery)
     }
 
     func testSQLErrorDoesNotReconnectOrRepeatStatement() async throws {
@@ -152,6 +153,7 @@ final class AppStoreConnectionTests: XCTestCase {
         let execution = Task { await store.run() }
         await session.waitUntilConnecting()
         XCTAssertTrue(store.isBusy)
+        XCTAssertTrue(store.isRunningQuery)
         store.query = "DELETE FROM notes"
         store.selectedSQL = ""
 
@@ -164,6 +166,59 @@ final class AppStoreConnectionTests: XCTestCase {
         XCTAssertEqual(store.history.map(\.sql), ["SELECT * FROM notes"])
         XCTAssertEqual(store.query, "DELETE FROM notes")
         XCTAssertFalse(store.isBusy)
+        XCTAssertFalse(store.isRunningQuery)
+    }
+
+    func testLoadingRemainsVisibleUntilQueryExecutionCompletes() async throws {
+        let session = FakeOracleSession(pausesExecution: true)
+        let store = try makeStore([session])
+        await store.connect(store.connection!)
+        store.query = "SELECT * FROM notes"
+        let execution = Task { await store.run() }
+        await session.waitUntilExecuting()
+
+        XCTAssertTrue(store.isRunningQuery)
+        XCTAssertTrue(store.isBusy)
+        XCTAssertFalse(store.canRunQuery)
+
+        await session.resumeExecution()
+        await execution.value
+
+        XCTAssertFalse(store.isRunningQuery)
+        XCTAssertFalse(store.isBusy)
+        XCTAssertNotNil(store.result)
+        XCTAssertNil(store.error)
+    }
+
+    func testQueryFailureClearsLoadingAndPreservesError() async throws {
+        let session = FakeOracleSession(executionError: "ORA-00942: table does not exist", pausesExecution: true)
+        let store = try makeStore([session])
+        await store.connect(store.connection!)
+        store.query = "SELECT * FROM missing_table"
+        let execution = Task { await store.run() }
+        await session.waitUntilExecuting()
+        XCTAssertTrue(store.isRunningQuery)
+
+        await session.resumeExecution()
+        await execution.value
+
+        XCTAssertFalse(store.isRunningQuery)
+        XCTAssertFalse(store.isBusy)
+        XCTAssertEqual(store.error, "ORA-00942: table does not exist")
+    }
+
+    func testManualConnectionDoesNotShowQueryLoading() async throws {
+        let session = FakeOracleSession(pausesConnection: true)
+        let store = try makeStore([session])
+        let connection = Task { await store.connect(store.connection!) }
+        await session.waitUntilConnecting()
+
+        XCTAssertTrue(store.isBusy)
+        XCTAssertFalse(store.isRunningQuery)
+
+        await session.resumeConnection()
+        _ = await connection.value
+        XCTAssertFalse(store.isRunningQuery)
     }
 
     private func makeStore(_ sessions: [FakeOracleSession], missingPassword: Bool = false) throws -> AppStore {
@@ -195,15 +250,20 @@ private actor FakeOracleSession: OracleConnectionSession {
     private let executionError: String?
     private let expiresDuringExecution: Bool
     private let pausesConnection: Bool
+    private let pausesExecution: Bool
     private var connecting = false
     private var observers: [CheckedContinuation<Void, Never>] = []
     private var connectionWaiter: CheckedContinuation<Void, Never>?
+    private var executing = false
+    private var executionObservers: [CheckedContinuation<Void, Never>] = []
+    private var executionWaiter: CheckedContinuation<Void, Never>?
 
-    init(connectionError: String? = nil, executionError: String? = nil, expiresDuringExecution: Bool = false, pausesConnection: Bool = false) {
+    init(connectionError: String? = nil, executionError: String? = nil, expiresDuringExecution: Bool = false, pausesConnection: Bool = false, pausesExecution: Bool = false) {
         self.connectionError = connectionError
         self.executionError = executionError
         self.expiresDuringExecution = expiresDuringExecution
         self.pausesConnection = pausesConnection
+        self.pausesExecution = pausesExecution
     }
 
     func connect(password: String, onEvent: @escaping ConnectionEventHandler) async throws {
@@ -222,8 +282,12 @@ private actor FakeOracleSession: OracleConnectionSession {
         if !valid { throw DatabaseError("Session expired") }
     }
 
-    func execute(_ sql: String) throws -> QueryResult {
+    func execute(_ sql: String) async throws -> QueryResult {
         actions.append("execute:" + sql)
+        executing = true
+        executionObservers.forEach { $0.resume() }
+        executionObservers.removeAll()
+        if pausesExecution { await withCheckedContinuation { executionWaiter = $0 } }
         if expiresDuringExecution { valid = false }
         if let executionError { throw DatabaseError(executionError) }
         return QueryResult(columns: ["value"], rows: [["1"]], message: "Query completed")
@@ -247,5 +311,15 @@ private actor FakeOracleSession: OracleConnectionSession {
     func resumeConnection() {
         connectionWaiter?.resume()
         connectionWaiter = nil
+    }
+
+    func waitUntilExecuting() async {
+        if executing { return }
+        await withCheckedContinuation { executionObservers.append($0) }
+    }
+
+    func resumeExecution() {
+        executionWaiter?.resume()
+        executionWaiter = nil
     }
 }
