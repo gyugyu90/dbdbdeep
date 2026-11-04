@@ -7,9 +7,13 @@ final class AppStore: ObservableObject {
     @Published var connections: [DBConnection] = []
     @Published var bookmarks: [QueryBookmark] = []
     @Published var selectedID: UUID?
-    @Published var query = ""
+    @Published var query = "" {
+        didSet { cachedStatements = nil; cachedLineCount = nil; cachedCursorTarget = nil; cachedBookmarkKey = nil }
+    }
     @Published var selectedSQL = ""
-    @Published var cursorLocation = 0
+    @Published var cursorLocation = 0 {
+        didSet { cachedCursorTarget = nil; cachedBookmarkKey = nil }
+    }
     @Published private(set) var editorFocusRequest: SQLEditorFocus?
     @Published var tables: [SchemaTable] = []
     @Published var results: [UUID: QueryResult] = [:]
@@ -42,11 +46,29 @@ final class AppStore: ObservableObject {
     private var drafts: [String: String] = [:]
     private var persistWork: DispatchWorkItem?
     private var schemaByConnection: [UUID: [SchemaTable]] = [:]
+    private var cachedStatements: [SQLStatement]?
+    private var cachedLineCount: Int?
+    private struct Cached<Value> { let value: Value }
+    private var cachedCursorTarget: Cached<SQLStatement?>?
+    private var cachedBookmarkKey: Cached<[String]?>?
 
     var connection: DBConnection? { connections.first { $0.id == selectedID } }
     var result: QueryResult? { selectedID.flatMap { results[$0] } }
     var isConnected: Bool { selectedID.map { connectedIDs.contains($0) } ?? false }
-    var cursorStatement: SQLStatement? { SQLStatementLocator.statementAtOrBefore(in: query, atUTF16Offset: cursorLocation) }
+    var queryLineCount: Int {
+        if let cachedLineCount { return cachedLineCount }
+        let count = SQLLineIndex(query).count
+        cachedLineCount = count
+        return count
+    }
+    var cursorStatement: SQLStatement? {
+        if let cachedCursorTarget { return cachedCursorTarget.value }
+        let statements = cachedStatements ?? SQLStatementLocator.statements(in: query)
+        cachedStatements = statements
+        let statement = SQLStatementLocator.statementAtOrBefore(in: query, atUTF16Offset: cursorLocation, using: statements)
+        cachedCursorTarget = Cached(value: statement)
+        return statement
+    }
     var sqlToRun: String { selectedSQL.isEmpty ? cursorStatement?.text ?? "" : selectedSQL }
     var canRunQuery: Bool { connection != nil && !isBusy && !sqlToRun.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
     var sqlToBookmark: String { cursorStatement?.text ?? "" }
@@ -62,7 +84,13 @@ final class AppStore: ObservableObject {
         }
     }
     var currentBookmark: QueryBookmark? {
-        guard let key = SQLStatementLocator.comparisonKey(for: sqlToBookmark) else { return nil }
+        let key: [String]?
+        if let cachedBookmarkKey { key = cachedBookmarkKey.value }
+        else {
+            key = SQLStatementLocator.comparisonKey(for: sqlToBookmark)
+            cachedBookmarkKey = Cached(value: key)
+        }
+        guard let key else { return nil }
         return connectionBookmarks.first { SQLStatementLocator.comparisonKey(for: $0.sql) == key }
     }
     var filteredTables: [SchemaTable] { tables.filter { schemaSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(schemaSearch) } }

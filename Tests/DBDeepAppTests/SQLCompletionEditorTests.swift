@@ -70,7 +70,63 @@ final class SQLCompletionEditorTests: XCTestCase {
         coordinator.dismissCompletion()
     }
 
-    private func editor(_ marked: String) -> (CompletionState, NSTextView, SQLTextEditor.Coordinator) {
+    func testTypingIdentifierAndQualifierOpensSuggestions() async throws {
+        let (state, view, coordinator) = editor("SELECT * FROM c|")
+        defer { coordinator.stopObserving() }
+        view.keyDown(with: key("u", code: 32))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(state.text, "SELECT * FROM cu")
+        XCTAssertEqual(coordinator.completion?.candidates.first?.name, "customers")
+
+        view.string = "SELECT customers"
+        view.setSelectedRange(NSRange(location: (view.string as NSString).length, length: 0))
+        view.keyDown(with: key(".", code: 47))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(coordinator.completion?.candidates.map(\.name), ["email", "id", "name"])
+    }
+
+    func testEditingAndNavigationKeysDoNotOpenSuggestions() async throws {
+        let keys: [(String, UInt16)] = [(" ", 49), ("\t", 48), ("\r", 36), ("\u{3}", 76), ("\u{7f}", 51), ("\u{f728}", 117), ("\u{f702}", 123), ("\u{f703}", 124), ("\u{f700}", 126), ("\u{f701}", 125)]
+        for (characters, code) in keys {
+            let (state, view, coordinator) = editor("SELECT * FROM c|u")
+            view.keyDown(with: key(characters, code: code))
+            try await Task.sleep(for: .milliseconds(160))
+            XCTAssertNil(coordinator.completion, "Unexpected suggestions for key code \(code): \(state.text)")
+            coordinator.stopObserving()
+        }
+    }
+
+    func testNavigationAndWhitespaceCancelPendingTypingSuggestions() async throws {
+        for (characters, code): (String, UInt16) in [("\u{f702}", 123), (" ", 49), ("\u{7f}", 51)] {
+            let (_, view, coordinator) = editor("SELECT * FROM c|")
+            view.keyDown(with: key("u", code: 32))
+            view.keyDown(with: key(characters, code: code))
+            try await Task.sleep(for: .milliseconds(200))
+            XCTAssertNil(coordinator.completion)
+            coordinator.stopObserving()
+        }
+    }
+
+    func testPastingAndAcceptingCompletionDoNotReopenSuggestions() async throws {
+        let (_, view, coordinator) = editor("SELECT * FROM c|")
+        defer { coordinator.stopObserving() }
+        view.insertText("u", replacementRange: view.selectedRange())
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertNil(coordinator.completion)
+
+        view.keyDown(with: key(" ", code: 49, modifiers: .control))
+        XCTAssertEqual(coordinator.completion?.candidates.first?.name, "customers")
+        view.keyDown(with: key("\t", code: 48))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(view.string, "SELECT * FROM customers")
+        XCTAssertNil(coordinator.completion)
+    }
+
+    private func key(_ characters: String, code: UInt16, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
+        NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: 0, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
+    }
+
+    private func editor(_ marked: String) -> (CompletionState, SQLCompletionTextView, SQLTextEditor.Coordinator) {
         let cursor = (marked as NSString).range(of: "|").location
         let state = CompletionState(marked.replacingOccurrences(of: "|", with: ""))
         let tables = [
@@ -81,10 +137,12 @@ final class SQLCompletionEditorTests: XCTestCase {
             selection: Binding(get: { state.selection }, set: { state.selection = $0 }),
             cursorLocation: Binding(get: { state.cursor }, set: { state.cursor = $0 }), tables: tables, connectionKind: .sample)
         let coordinator = SQLTextEditor.Coordinator(editor)
-        let view = NSTextView()
-        view.isRichText = false
-        view.string = state.text
-        view.delegate = coordinator
+        let scroll = editor.makeScrollView(coordinator: coordinator)
+        let view = scroll.documentView as! SQLCompletionTextView
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 640, height: 280), styleMask: [.titled], backing: .buffered, defer: false)
+        window.contentView = scroll
+        window.makeFirstResponder(view)
+        state.window = window
         view.setSelectedRange(NSRange(location: cursor, length: 0))
         return (state, view, coordinator)
     }
@@ -94,5 +152,6 @@ private final class CompletionState {
     var text: String
     var selection = ""
     var cursor = 0
+    var window: NSWindow?
     init(_ text: String) { self.text = text }
 }

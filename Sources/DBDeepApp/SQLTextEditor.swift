@@ -23,14 +23,22 @@ struct SQLTextEditor: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
     func makeNSView(context: Context) -> NSScrollView {
+        makeScrollView(coordinator: context.coordinator)
+    }
+
+    func makeScrollView(coordinator: Coordinator) -> NSScrollView {
         let storage = NSTextStorage()
         let layout = NSLayoutManager()
+        layout.allowsNonContiguousLayout = true
         let container = NSTextContainer(containerSize: NSSize(width: 0, height: CGFloat.greatestFiniteMagnitude))
         storage.addLayoutManager(layout); layout.addTextContainer(container)
         let view = SQLCompletionTextView(frame: .zero, textContainer: container)
-        view.onDismissCompletion = { [weak coordinator = context.coordinator] in coordinator?.dismissCompletion() }
-        view.onRequestCompletion = { [weak coordinator = context.coordinator, weak view] in
+        view.onDismissCompletion = { [weak coordinator] in coordinator?.dismissCompletion() }
+        view.onRequestCompletion = { [weak coordinator, weak view] in
             if let view { coordinator?.updateCompletion(view, explicit: true) }
+        }
+        view.onTypeCompletion = { [weak coordinator, weak view] in
+            if let view { coordinator?.scheduleCompletion(view) }
         }
         view.isRichText = false
         view.isAutomaticQuoteSubstitutionEnabled = false
@@ -47,10 +55,12 @@ struct SQLTextEditor: NSViewRepresentable {
         view.selectedTextAttributes = [.backgroundColor: NSColor(Theme.tint("lavender"))]
         view.textContainerInset = NSSize(width: 14, height: 22)
         view.isVerticallyResizable = true
+        view.minSize = NSSize(width: 0, height: 0)
+        view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
         view.isHorizontallyResizable = false
         view.autoresizingMask = [.width]
         container.widthTracksTextView = true
-        view.delegate = context.coordinator
+        view.delegate = coordinator
         let scroll = NSScrollView()
         scroll.documentView = view
         scroll.hasVerticalScroller = true
@@ -61,8 +71,9 @@ struct SQLTextEditor: NSViewRepresentable {
         scroll.hasVerticalRuler = true
         scroll.rulersVisible = true
         scroll.verticalRulerView = LineNumberRuler(textView: view, scrollView: scroll)
-        view.string = text
-        context.coordinator.highlight(view)
+        coordinator.replaceText(in: view, with: text)
+        coordinator.observeScrolling(scroll)
+        coordinator.highlight(view)
         return scroll
     }
 
@@ -89,7 +100,7 @@ struct SQLTextEditor: NSViewRepresentable {
     }
 
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
-        coordinator.dismissCompletion()
+        coordinator.stopObserving()
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -100,15 +111,62 @@ struct SQLTextEditor: NSViewRepresentable {
         private(set) var selectedCompletion = 0
         private var applyingCompletion = false
         private var synchronizingSelection = false
+        private var applyingLimit = false
+        private var boundsObserver: NSObjectProtocol?
+        private var scrollbarController: ScrollbarController?
+        private var highlightWork: DispatchWorkItem?
+        private var highlightTask: Task<Void, Never>?
+        private var highlightID = UUID()
+        private var syntaxMatches: SQLSyntaxHighlighter.Matches?
+        private let syntaxRules = SQLSyntaxHighlighter.rules
+        private var completionID = UUID()
+        private let analysisQueue = DispatchQueue(label: "studio.dbdbdeep.sql-analysis", qos: .userInitiated)
+        var onTruncate: (() -> Void)?
+        private var showingLimitAlert = false
         private var scheduledFocusID: UUID?
         private(set) var appliedFocusID: UUID?
         init(_ parent: SQLTextEditor) { self.parent = parent }
 
+        deinit {
+            if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
+            highlightWork?.cancel()
+            highlightTask?.cancel()
+            completionWork?.cancel()
+        }
+
+        func observeScrolling(_ scroll: NSScrollView) {
+            scrollbarController = ScrollbarController(scroll)
+            scroll.contentView.postsBoundsChangedNotifications = true
+            boundsObserver = NotificationCenter.default.addObserver(forName: NSView.boundsDidChangeNotification, object: scroll.contentView, queue: .main) { [weak self, weak scroll] _ in
+                guard let view = scroll?.documentView as? NSTextView else { return }
+                self?.highlightVisibleText(view)
+                scroll?.verticalRulerView?.needsDisplay = true
+            }
+        }
+
+        func stopObserving() {
+            scrollbarController = nil
+            if let boundsObserver { NotificationCenter.default.removeObserver(boundsObserver) }
+            boundsObserver = nil
+            highlightID = UUID()
+            highlightWork?.cancel()
+            highlightTask?.cancel()
+            dismissCompletion()
+        }
+
         func replaceText(in view: NSTextView, with text: String) {
             synchronizingSelection = true
             defer { synchronizingSelection = false }
-            view.string = text
+            let limited = SQLLineIndex(text).truncated(text)
+            view.string = limited ?? text
             view.setSelectedRange(NSRange(location: 0, length: 0))
+            if let limited {
+                DispatchQueue.main.async { [weak self, weak view] in
+                    guard let self, let view, self.parent.text == text else { return }
+                    self.parent.text = limited
+                    self.notifyTruncation(in: view)
+                }
+            }
         }
 
         func scheduleFocus(in view: NSTextView) {
@@ -137,11 +195,15 @@ struct SQLTextEditor: NSViewRepresentable {
         }
         func textDidChange(_ notification: Notification) {
             guard !synchronizingSelection, let view = notification.object as? NSTextView else { return }
+            if !applyingLimit, !view.hasMarkedText(), let limited = SQLLineIndex(view.string).truncated(view.string) {
+                applyLimitedText(limited, caret: view.selectedRange().location, in: view)
+                return
+            }
             parent.text = view.string
             highlight(view)
             updateSelection(view)
             view.enclosingScrollView?.verticalRulerView?.needsDisplay = true
-            if !applyingCompletion { scheduleCompletion(view) }
+            dismissCompletion()
         }
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let view = notification.object as? NSTextView else { return }
@@ -151,12 +213,51 @@ struct SQLTextEditor: NSViewRepresentable {
 
         func textDidEndEditing(_ notification: Notification) { dismissCompletion() }
 
+        func textView(_ textView: NSTextView, shouldChangeTextIn affectedCharRange: NSRange, replacementString: String?) -> Bool {
+            guard !applyingLimit, !textView.hasMarkedText(), let replacementString else { return true }
+            let candidate = (textView.string as NSString).replacingCharacters(in: affectedCharRange, with: replacementString)
+            guard let limited = SQLLineIndex(candidate).truncated(candidate) else { return true }
+            applyLimitedText(limited, caret: affectedCharRange.location + (replacementString as NSString).length, in: textView)
+            return false
+        }
+
+        private func applyLimitedText(_ text: String, caret: Int, in view: NSTextView) {
+            applyingLimit = true
+            defer { applyingLimit = false }
+            if view.string != text {
+                view.breakUndoCoalescing()
+                view.insertText(text, replacementRange: NSRange(location: 0, length: (view.string as NSString).length))
+            }
+            view.setSelectedRange(NSRange(location: min(caret, (view.string as NSString).length), length: 0))
+            view.scrollRangeToVisible(view.selectedRange())
+            notifyTruncation(in: view)
+        }
+
+        private func notifyTruncation(in view: NSTextView) {
+            if let onTruncate { onTruncate(); return }
+            guard !showingLimitAlert else { return }
+            showingLimitAlert = true
+            DispatchQueue.main.async { [weak self, weak view] in
+                guard let self else { return }
+                guard let window = view?.window, window.attachedSheet == nil else { self.showingLimitAlert = false; return }
+                let alert = NSAlert()
+                alert.messageText = "Query is too long"
+                alert.informativeText = "The query console supports up to 100,000 lines. Text after line 100,000 was truncated."
+                alert.alertStyle = .warning
+                alert.addButton(withTitle: "OK")
+                alert.beginSheetModal(for: window) { [weak self] _ in self?.showingLimitAlert = false }
+            }
+        }
+
         func textView(_ textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
             if commandSelector == #selector(NSResponder.complete(_:)) {
                 updateCompletion(textView, explicit: true)
                 return true
             }
-            guard let completion, !textView.hasMarkedText() else { return false }
+            guard let completion, !textView.hasMarkedText() else {
+                dismissCompletion()
+                return false
+            }
             switch commandSelector {
             case #selector(NSResponder.moveDown(_:)):
                 selectedCompletion = min(selectedCompletion + 1, completion.candidates.count - 1)
@@ -169,13 +270,15 @@ struct SQLTextEditor: NSViewRepresentable {
             case #selector(NSResponder.cancelOperation(_:)):
                 dismissCompletion()
             default:
+                dismissCompletion()
                 return false
             }
             return true
         }
 
-        private func scheduleCompletion(_ view: NSTextView) {
+        func scheduleCompletion(_ view: NSTextView) {
             dismissCompletion()
+            guard !applyingCompletion, !view.hasMarkedText() else { return }
             let work = DispatchWorkItem { [weak self, weak view] in
                 if let view { self?.updateCompletion(view) }
             }
@@ -186,10 +289,28 @@ struct SQLTextEditor: NSViewRepresentable {
         func updateCompletion(_ view: NSTextView, explicit: Bool = false) {
             dismissCompletion()
             guard !view.hasMarkedText(), view.selectedRange().length == 0 else { return }
-            completion = SQLCompletionEngine(tables: parent.tables, kind: parent.connectionKind)
-                .completions(in: view.string, atUTF16Offset: view.selectedRange().location, explicit: explicit)
-            selectedCompletion = 0
-            showCompletion(view)
+            let engine = SQLCompletionEngine(tables: parent.tables, kind: parent.connectionKind)
+            let text = view.string
+            let cursor = view.selectedRange().location
+            if (text as NSString).length < 100_000 {
+                completion = engine.completions(in: text, atUTF16Offset: cursor, explicit: explicit)
+                selectedCompletion = 0
+                showCompletion(view)
+            } else {
+                let id = completionID
+                let work = DispatchWorkItem { [weak self, weak view] in
+                    let result = engine.completions(in: text, atUTF16Offset: cursor, explicit: explicit)
+                    DispatchQueue.main.async {
+                        guard let self, let view, self.completionID == id,
+                              view.string == text, view.selectedRange() == NSRange(location: cursor, length: 0), !view.hasMarkedText() else { return }
+                        self.completion = result
+                        self.selectedCompletion = 0
+                        self.showCompletion(view)
+                    }
+                }
+                completionWork = work
+                analysisQueue.async(execute: work)
+            }
         }
 
         private func showCompletion(_ view: NSTextView) {
@@ -214,6 +335,7 @@ struct SQLTextEditor: NSViewRepresentable {
         }
 
         func dismissCompletion() {
+            completionID = UUID()
             completionWork?.cancel()
             completionWork = nil
             completion = nil
@@ -228,62 +350,42 @@ struct SQLTextEditor: NSViewRepresentable {
             if parent.cursorLocation != range.location { parent.cursorLocation = range.location }
         }
         func highlight(_ view: NSTextView) {
-            guard let storage = view.textStorage else { return }
-            let range = NSRange(location: 0, length: storage.length)
-            storage.beginEditing()
-            storage.addAttributes([.foregroundColor: NSColor(Theme.editorText), .font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular)], range: range)
-            let rules: [(String, NSColor)] = [
-                ("\\b(SELECT|FROM|WHERE|ORDER|BY|GROUP|HAVING|JOIN|LEFT|RIGHT|INNER|OUTER|ON|AS|AND|OR|NOT|NULL|IS|IN|LIKE|INSERT|INTO|VALUES|UPDATE|SET|DELETE|CREATE|TABLE|DROP|ALTER|LIMIT|OFFSET|FETCH|FIRST|ROWS|ONLY|DISTINCT|ASC|DESC|COUNT|SUM|AVG|CASE|WHEN|THEN|ELSE|END|BEGIN|COMMIT|ROLLBACK)\\b", NSColor(Theme.purple)),
-                ("\\b[0-9]+(?:\\.[0-9]+)?\\b", NSColor(Theme.sqlNumber)),
-                ("'(?:''|[^'])*'", NSColor(Theme.sqlString)),
-                ("--[^\\n]*|/\\*[\\s\\S]*?\\*/", NSColor(Theme.sqlComment))
-            ]
-            for (pattern, color) in rules {
-                guard let expression = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive]) else { continue }
-                for match in expression.matches(in: view.string, range: range) { storage.addAttribute(.foregroundColor, value: color, range: match.range) }
-            }
-            storage.endEditing()
+            let text = view.string
+            let index = SQLLineIndex(text)
+            (view.enclosingScrollView?.verticalRulerView as? LineNumberRuler)?.update(index)
             view.typingAttributes = [.font: NSFont.monospacedSystemFont(ofSize: 13, weight: .regular), .foregroundColor: NSColor(Theme.editorText)]
-        }
-    }
-}
-
-final class LineNumberRuler: NSRulerView {
-    weak var textView: NSTextView?
-    init(textView: NSTextView, scrollView: NSScrollView) {
-        self.textView = textView
-        super.init(scrollView: scrollView, orientation: .verticalRuler)
-        clientView = textView
-        ruleThickness = 44
-    }
-    required init(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
-    override func draw(_ dirtyRect: NSRect) {
-        drawHashMarksAndLabels(in: dirtyRect)
-    }
-    override func drawHashMarksAndLabels(in rect: NSRect) {
-        NSColor(Theme.surface).setFill(); bounds.fill()
-        guard let view = textView, let layout = view.layoutManager, let container = view.textContainer else { return }
-        let string = view.string as NSString
-        let visible = layout.glyphRange(forBoundingRect: view.visibleRect, in: container)
-        var line = 1
-        var index = 0
-        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.monospacedSystemFont(ofSize: 11, weight: .regular), .foregroundColor: NSColor(Theme.lineNumber)]
-        while index < string.length {
-            let glyph = layout.glyphIndexForCharacter(at: min(index, max(0, string.length - 1)))
-            if glyph >= visible.location && glyph <= NSMaxRange(visible) {
-                let lineRect = layout.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-                let y = lineRect.minY + view.textContainerInset.height - view.visibleRect.minY + 1
-                let label = "\(line)" as NSString
-                label.draw(at: NSPoint(x: ruleThickness - label.size(withAttributes: attributes).width - 9, y: y), withAttributes: attributes)
+            view.layoutManager?.removeTemporaryAttribute(.foregroundColor, forCharacterRange: NSRange(location: 0, length: index.length))
+            highlightWork?.cancel()
+            highlightTask?.cancel()
+            syntaxMatches = nil
+            let id = UUID()
+            highlightID = id
+            let rules = syntaxRules
+            let work = DispatchWorkItem { [weak self, weak view] in
+                self?.highlightTask = Task.detached(priority: .userInitiated) { [weak self, weak view] in
+                    guard let matches = SQLSyntaxHighlighter.matches(in: text, rules: rules, cancelled: { Task.isCancelled }) else { return }
+                    await MainActor.run { [weak self, weak view] in
+                        guard let self, let view, self.highlightID == id, view.string == text else { return }
+                        self.syntaxMatches = matches
+                        self.highlightVisibleText(view)
+                    }
+                }
             }
-            let next = NSMaxRange(string.lineRange(for: NSRange(location: index, length: 0)))
-            if next <= index { break }
-            index = next; line += 1
+            highlightWork = work
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
         }
-        if string.length == 0 || view.string.hasSuffix("\n") {
-            let y = layout.extraLineFragmentRect.minY + view.textContainerInset.height - view.visibleRect.minY + 1
-            let label = "\(line)" as NSString
-            label.draw(at: NSPoint(x: ruleThickness - label.size(withAttributes: attributes).width - 9, y: y), withAttributes: attributes)
+
+        private func highlightVisibleText(_ view: NSTextView) {
+            guard let matches = syntaxMatches, let layout = view.layoutManager, let container = view.textContainer else { return }
+            let bounds = view.visibleRect.offsetBy(dx: -view.textContainerInset.width, dy: -view.textContainerInset.height)
+            let glyphs = layout.glyphRange(forBoundingRect: bounds, in: container)
+            let range = layout.characterRange(forGlyphRange: glyphs, actualGlyphRange: nil)
+            layout.removeTemporaryAttribute(.foregroundColor, forCharacterRange: range)
+            for (rule, ranges) in zip(syntaxRules, matches.rules) {
+                for match in SQLSyntaxHighlighter.visibleMatches(ranges, in: range) {
+                    layout.addTemporaryAttribute(.foregroundColor, value: rule.color, forCharacterRange: NSIntersectionRange(match, range))
+                }
+            }
         }
     }
 }

@@ -44,7 +44,7 @@ struct ConnectionSidebar: View {
                         if store.filteredTables.isEmpty {
                             Text(store.schemaSearch.isEmpty ? "No tables yet. Create something lovely." : "No matching tables.").font(.system(size: 11)).foregroundStyle(Theme.secondary).padding(18)
                         }
-                    }.padding(.horizontal, 10)
+                    }.padding(.horizontal, 10).themedScrollbars()
                 }
             } else {
                 VStack(spacing: 12) {

@@ -6,8 +6,14 @@ struct ResultsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var filter = ""
     @State private var copiedCell: CopiedCell?
+    @State private var selection: GridSelection?
     @State private var grid = ResultGridState()
     @State private var columnDrag: ColumnDrag?
+
+    private struct GridSelection {
+        let row: Int
+        let column: Int?
+    }
 
     private struct ColumnDrag {
         let source: Int
@@ -78,11 +84,11 @@ struct ResultsView: View {
                 if store.isRunningQuery { QueryLoadingOverlay(status: store.status) }
             }
             .onChange(of: store.result?.id, initial: true) { _, _ in
-                filter = ""; copiedCell = nil
+                filter = ""; copiedCell = nil; selection = nil
                 columnDrag = nil
                 grid.reset(for: store.result)
             }
-            .onChange(of: filter) { _, _ in copiedCell = nil }
+            .onChange(of: filter) { _, _ in copiedCell = nil; selection = nil }
             .onChange(of: store.isRunningQuery) { _, running in if running { copiedCell = nil; columnDrag = nil } }
             .task(id: copiedCell) {
                 guard copiedCell != nil else { return }
@@ -105,6 +111,8 @@ struct ResultsView: View {
         let rows = displayedRows
         let columns = grid.columns(in: result)
         return GeometryReader { geometry in
+            let content = NSSize(width: 38 + columns.reduce(CGFloat.zero) { $0 + width($1, result: result) }, height: 34 + CGFloat(rows.count) * 36)
+            let viewport = ScrollbarController.viewportSize(content: content, in: geometry.size)
             ScrollView([.horizontal, .vertical]) {
                 LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
                 Section {
@@ -116,8 +124,14 @@ struct ResultsView: View {
                                     .frame(width: width(index, result: result), height: 36, alignment: .leading)
                                     .overlay(alignment: .trailing) { Theme.line.opacity(0.6).frame(width: 1) }
                             }
-                        }.background(position.isMultiple(of: 2) ? Theme.surface : Theme.canvas)
+                        }.frame(minWidth: viewport.width, alignment: .leading)
+                            .background(selection?.row == row.offset ? Theme.selectedRow : position.isMultiple(of: 2) ? Theme.surface : Theme.canvas)
                             .overlay(alignment: .bottom) { Theme.line.opacity(0.75).frame(height: 1) }
+                            .contentShape(Rectangle())
+                            .simultaneousGesture(TapGesture().onEnded {
+                                if selection?.row != row.offset { selection = GridSelection(row: row.offset, column: nil) }
+                            })
+                            .accessibilityAddTraits(selection?.row == row.offset ? .isSelected : [])
                     }
                 } header: {
                     HStack(spacing: 0) {
@@ -145,7 +159,7 @@ struct ResultsView: View {
                     }.coordinateSpace(name: "resultColumns")
                         .background(Theme.sidebar).overlay(alignment: .bottom) { Theme.line.frame(height: 1) }
                 }
-                }.frame(minWidth: geometry.size.width, minHeight: geometry.size.height, alignment: .topLeading)
+                }.frame(minWidth: viewport.width, minHeight: viewport.height, alignment: .topLeading).themedScrollbars()
             }
         }
     }
@@ -178,13 +192,27 @@ struct ResultsView: View {
                 }
             } else { Text("NULL").font(.system(size: 10, design: .monospaced)).italic().foregroundStyle(Theme.secondary.opacity(0.65)) }
         }.lineLimit(1).padding(.horizontal, 12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .background {
+                if selection?.row == row, selection?.column == index {
+                    RoundedRectangle(cornerRadius: 3)
+                        .fill(Theme.selectedCell.shadow(.inner(color: .black.opacity(0.18), radius: 2, x: 1, y: 2)))
+                        .overlay {
+                            RoundedRectangle(cornerRadius: 3).strokeBorder(
+                                LinearGradient(colors: [Theme.purple.opacity(0.6), Theme.cellInsetHighlight], startPoint: .topLeading, endPoint: .bottomTrailing),
+                                lineWidth: 1)
+                        }
+                        .padding(2).allowsHitTesting(false)
+                }
+            }
             .contentShape(Rectangle()).onTapGesture(count: 2) {
+                selection = GridSelection(row: row, column: index)
                 NSPasteboard.general.clearContents()
                 guard NSPasteboard.general.setString(value ?? "NULL", forType: .string) else { return }
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
                     copiedCell = CopiedCell(row: row, column: index)
                 }
             }
+            .simultaneousGesture(TapGesture().onEnded { selection = GridSelection(row: row, column: index) })
             .overlay(alignment: .trailing) {
                 if copiedCell?.row == row, copiedCell?.column == index {
                     HStack(spacing: 3) {

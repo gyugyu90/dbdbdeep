@@ -94,7 +94,7 @@ private struct SQLCompletionList: View {
                                 .accessibilityLabel(candidate.name + ", " + candidate.detail)
                                 .accessibilityAddTraits(index == selected ? .isSelected : [])
                         }
-                    }
+                    }.themedScrollbars()
                 }.onChange(of: selected, initial: true) { _, value in proxy.scrollTo(value, anchor: .center) }
             }
             HStack {
@@ -111,6 +111,13 @@ private struct SQLCompletionList: View {
 final class SQLCompletionTextView: NSTextView {
     var onDismissCompletion: (() -> Void)?
     var onRequestCompletion: (() -> Void)?
+    var onTypeCompletion: (() -> Void)?
+    private var textRevision = 0
+
+    override func didChangeText() {
+        textRevision &+= 1
+        super.didChangeText()
+    }
 
     override func complete(_ sender: Any?) { onRequestCompletion?() }
 
@@ -136,6 +143,12 @@ final class SQLCompletionTextView: NSTextView {
             return
         }
         if event.modifierFlags.contains(.command) { onDismissCompletion?() }
+        let revision = textRevision
         super.keyDown(with: event)
+        guard textRevision != revision, !hasMarkedText(),
+              event.modifierFlags.intersection([.command, .control]).isEmpty,
+              let character = event.characters?.unicodeScalars.last,
+              CharacterSet.alphanumerics.contains(character) || CharacterSet.nonBaseCharacters.contains(character) || "._$#\"".unicodeScalars.contains(character) else { return }
+        onTypeCompletion?()
     }
 }

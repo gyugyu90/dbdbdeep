@@ -57,7 +57,7 @@ struct BookmarkSidebar: View {
                             .overlay(RoundedRectangle(cornerRadius: 9).strokeBorder(Theme.line, style: StrokeStyle(lineWidth: 1, dash: [4, 3])))
                     }.buttonStyle(.plain).disabled(!store.canBookmarkQuery)
                     if !store.unassignedBookmarks.isEmpty { unassignedQueries }
-                }.padding(.horizontal, 17).padding(.bottom, 12)
+                }.padding(.horizontal, 17).padding(.bottom, 12).themedScrollbars()
             }
             Spacer(minLength: 0)
             HStack(spacing: 8) {

@@ -68,7 +68,7 @@ struct ConsoleView: View {
                 Image(systemName: "info.circle").font(.system(size: 9))
                 Text(store.selectedSQL.isEmpty ? (store.sqlToRun.isEmpty ? "Place the cursor in or after a SQL statement" : "Statement at or before cursor will run · ⌘↵") : "Only selected SQL will run · ⌘↵")
                 Spacer()
-                Text("UTF-8"); Text("·"); Text("\(store.query.components(separatedBy: "\n").count) lines")
+                Text("UTF-8"); Text("·"); Text("\(store.queryLineCount) lines")
             }.font(.system(size: 9)).foregroundStyle(Theme.secondary).padding(.horizontal, 17).frame(height: 28)
                 .background(Theme.canvas)
         }.background(Theme.surface)

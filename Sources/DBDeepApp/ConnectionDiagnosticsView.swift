@@ -119,7 +119,7 @@ struct ConnectionDiagnosticsView: View {
                         Text("Test connection을 누르면 실제 연결 단계와 소요 시간이 표시됩니다. 접속·인증은 Oracle 드라이버가 함께 처리합니다.")
                             .font(.system(size: 10)).foregroundStyle(Theme.secondary).lineSpacing(4)
                     }
-                }.padding(.trailing, 5).padding(.bottom, 8)
+                }.padding(.trailing, 5).padding(.bottom, 8).themedScrollbars()
             }
             Text("비밀번호는 진단 기록과 복사한 보고서에 포함하지 않습니다.").font(.system(size: 9)).foregroundStyle(Theme.secondary)
         }.padding(15).background(Theme.sidebar, in: RoundedRectangle(cornerRadius: 12))

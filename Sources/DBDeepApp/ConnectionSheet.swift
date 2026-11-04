@@ -99,7 +99,7 @@ struct ConnectionSheet: View {
                                 Text("추가한 파일은 현재 위치에서 불러옵니다.").font(.system(size: 9)).foregroundStyle(Theme.secondary)
                             }.padding(.top, 9)
                         }.font(.system(size: 11, weight: .medium))
-                    }.padding(.trailing, 6)
+                    }.padding(.trailing, 6).themedScrollbars()
                 }.frame(width: 350).disabled(store.isBusy || testing)
                 ConnectionDiagnosticsView(connection: profile, attempt: store.connectionAttempts[id])
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -17,6 +17,9 @@ struct DBDeepApp: App {
                 Button("New Oracle Connection…") { store.newConnection() }.keyboardShortcut("n", modifiers: .command).disabled(store.isBusy)
             }
             CommandMenu("Query") {
+                Button(store.selectedSQL.isEmpty ? "Run statement" : "Run selection") { Task { await store.run() } }
+                    .keyboardShortcut(KeyEquivalent("\u{3}"), modifiers: .command).disabled(!store.canRunQuery)
+                Divider()
                 Button("Commit changes") { Task { await store.transaction(commit: true) } }.keyboardShortcut(.return, modifiers: [.command, .shift]).disabled(!store.isConnected || store.isBusy)
                 Button("Rollback changes") { Task { await store.transaction(commit: false) } }.disabled(!store.isConnected || store.isBusy)
                 Divider()

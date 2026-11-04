@@ -25,12 +25,19 @@ public enum SQLStatementLocator {
         return (combined, range)
     }
 
-    public static func statementAtOrBefore(in sql: String, atUTF16Offset offset: Int) -> SQLStatement? {
+    public static func statementAtOrBefore(in sql: String, atUTF16Offset offset: Int, using parsedStatements: [SQLStatement]? = nil) -> SQLStatement? {
         let source = sql as NSString
         let location = min(max(0, offset), source.length)
-        let statements = statements(in: sql)
-        if let current = statements.first(where: { NSLocationInRange(location, $0.range) }) { return current }
-        guard let previous = statements.last(where: { NSMaxRange($0.range) <= location }) else { return nil }
+        let statements = parsedStatements ?? statements(in: sql)
+        var lower = 0
+        var upper = statements.count
+        while lower < upper {
+            let middle = (lower + upper) / 2
+            if statements[middle].range.location <= location { lower = middle + 1 } else { upper = middle }
+        }
+        guard lower > 0 else { return nil }
+        let previous = statements[lower - 1]
+        if NSLocationInRange(location, previous.range) { return previous }
         let gap = source.substring(with: NSRange(location: NSMaxRange(previous.range), length: location - NSMaxRange(previous.range)))
         return tokenize(gap).allSatisfy { $0.kind == .semicolon || $0.kind == .slash } ? previous : nil
     }

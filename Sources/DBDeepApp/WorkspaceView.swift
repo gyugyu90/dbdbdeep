@@ -70,7 +70,7 @@ struct WorkspaceView: View {
                             }.padding(10).background(Theme.sidebar, in: RoundedRectangle(cornerRadius: 8))
                         }.buttonStyle(.plain).disabled(store.isBusy)
                     }
-                }
+                }.themedScrollbars()
             }.frame(maxHeight: 350)
         }.padding(20).frame(width: 360)
     }
