@@ -25,16 +25,16 @@ struct ConnectionSidebar: View {
             }.buttonStyle(.plain).foregroundStyle(Theme.secondary).disabled(store.isBusy)
             Rectangle().fill(Theme.line).frame(height: 1).padding(.horizontal, 18).padding(.vertical, 12)
             HStack {
-                Text("SCHEMA").font(.system(size: 9, weight: .semibold)).tracking(1.5)
+                Text(store.connection?.kind == .mongodb ? "COLLECTIONS" : "SCHEMA").font(.system(size: 9, weight: .semibold)).tracking(1.5)
                 Spacer()
                 IconButton(icon: "arrow.clockwise", help: "Refresh schema") { Task { await store.refreshSchema() } }.disabled(store.isBusy || !store.isConnected)
             }.foregroundStyle(Theme.secondary).padding(.horizontal, 18)
-            SearchField(placeholder: "Find a table…", text: $store.schemaSearch).padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 16)
+            SearchField(placeholder: store.connection?.kind == .mongodb ? "Find a collection…" : "Find a table…", text: $store.schemaSearch).padding(.horizontal, 16).padding(.top, 8).padding(.bottom, 16)
             if store.isConnected {
                 HStack(spacing: 7) {
                     Image(systemName: "chevron.down").font(.system(size: 8, weight: .bold))
                     Image(systemName: "folder").font(.system(size: 11))
-                    Text(store.connection?.kind == .oracle ? (store.connection?.username.uppercased() ?? "Schema") : "main").font(.system(size: 11, weight: .medium)).lineLimit(1)
+                    Text(store.connection?.kind == .oracle ? (store.connection?.username.uppercased() ?? "Schema") : store.connection?.kind == .mongodb ? (store.connection?.service ?? "Database") : "main").font(.system(size: 11, weight: .medium)).lineLimit(1)
                     Spacer()
                     Text("\(store.tables.count)").font(.system(size: 9)).foregroundStyle(Theme.secondary)
                 }.padding(.horizontal, 20).padding(.bottom, 8)
@@ -42,7 +42,7 @@ struct ConnectionSidebar: View {
                     VStack(alignment: .leading, spacing: 2) {
                         ForEach(store.filteredTables) { table in schemaRow(table) }
                         if store.filteredTables.isEmpty {
-                            Text(store.schemaSearch.isEmpty ? "No tables yet. Create something lovely." : "No matching tables.").font(.system(size: 11)).foregroundStyle(Theme.secondary).padding(18)
+                            Text(store.schemaSearch.isEmpty ? (store.connection?.kind == .mongodb ? "No collections yet. Create something lovely." : "No tables yet. Create something lovely.") : (store.connection?.kind == .mongodb ? "No matching collections." : "No matching tables.")).font(.system(size: 11)).foregroundStyle(Theme.secondary).padding(18)
                         }
                     }.padding(.horizontal, 10).themedScrollbars()
                 }
@@ -72,7 +72,7 @@ struct ConnectionSidebar: View {
                     Text(connection.name).font(.system(size: 11, weight: .semibold)).lineLimit(1)
                     HStack(spacing: 4) {
                         Circle().fill(connected ? Theme.green : Theme.secondary.opacity(0.5)).frame(width: 4, height: 4)
-                        Text(connection.kind == .sample ? "SQLite · local" : "Oracle · \(connected ? "connected" : "offline")").font(.system(size: 9)).foregroundStyle(Theme.secondary)
+                        Text(connection.kind == .sample ? "SQLite · local" : "\(connection.databaseName) · \(connected ? "connected" : "offline")").font(.system(size: 9)).foregroundStyle(Theme.secondary)
                     }
                 }
                 Spacer(minLength: 1)
@@ -83,7 +83,7 @@ struct ConnectionSidebar: View {
                 .overlay(RoundedRectangle(cornerRadius: 9).stroke(selected ? Theme.line : .clear, lineWidth: 1))
         }.buttonStyle(.plain).disabled(store.isBusy)
             .contextMenu {
-                if connection.kind == .oracle {
+                if connection.kind != .sample {
                     Button("Connect") { Task { await store.connect(connection) } }
                     Button("Connection details…") {
                         store.diagnosticConnectionID = connection.id; store.showConnectionDetails = true

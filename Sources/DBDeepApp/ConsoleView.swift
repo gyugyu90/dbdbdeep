@@ -21,7 +21,7 @@ struct ConsoleView: View {
                         Text(connection.name).font(.system(size: 10, weight: .medium)).lineLimit(1)
                     }.padding(.horizontal, 10).padding(.vertical, 7)
                         .background(Theme.sidebar, in: Capsule())
-                    if connection.kind == .oracle {
+                    if connection.kind != .sample {
                         IconButton(icon: "info.circle", help: "View connection details") {
                             store.diagnosticConnectionID = connection.id; store.showConnectionDetails = true
                         }
@@ -59,11 +59,11 @@ struct ConsoleView: View {
                 IconButton(icon: bookmark == nil ? "bookmark" : "bookmark.fill", help: bookmark.map { "Edit bookmark · \($0.name) · ⌘D" } ?? "Bookmark the statement at or before the cursor · ⌘D") { store.newBookmark() }
                     .keyboardShortcut("d", modifiers: .command).disabled(!store.canBookmarkQuery)
                 Rectangle().fill(Theme.line).frame(width: 1, height: 17).padding(.horizontal, 3)
-                IconButton(icon: "checkmark.circle", help: "Commit changes") { Task { await store.transaction(commit: true) } }.disabled(store.isBusy || !store.isConnected)
-                IconButton(icon: "arrow.uturn.backward", help: "Roll back changes") { Task { await store.transaction(commit: false) } }.disabled(store.isBusy || !store.isConnected)
-                CapsuleTag(text: "MANUAL COMMIT", color: "mint").padding(.leading, 3)
+                IconButton(icon: "checkmark.circle", help: "Commit changes") { Task { await store.transaction(commit: true) } }.disabled(!store.canUseTransactions)
+                IconButton(icon: "arrow.uturn.backward", help: "Roll back changes") { Task { await store.transaction(commit: false) } }.disabled(!store.canUseTransactions)
+                CapsuleTag(text: store.connection?.kind == .mongodb ? "IMMEDIATE WRITES" : "MANUAL COMMIT", color: store.connection?.kind == .mongodb ? "peach" : "mint").padding(.leading, 3)
             }.padding(.horizontal, 16).frame(height: 54)
-            SQLTextEditor(text: $store.query, selection: $store.selectedSQL, cursorLocation: $store.cursorLocation, tables: store.tables, connectionKind: store.connection?.kind ?? .oracle, focusRequest: store.editorFocusRequest)
+            SQLTextEditor(text: $store.query, selection: $store.selectedSQL, cursorLocation: $store.cursorLocation, tables: store.tables, connectionKind: store.connection?.kind ?? .oracle, focusRequest: store.editorFocusRequest, completionContextID: store.selectedID, loadMongoFields: { await store.mongoFields(in: $0) })
             HStack(spacing: 5) {
                 Image(systemName: "info.circle").font(.system(size: 9))
                 Text(store.selectedSQL.isEmpty ? (store.sqlToRun.isEmpty ? "Place the cursor in or after a SQL statement" : "Statement at or before cursor will run · ⌘↵") : "Only selected SQL will run · ⌘↵")

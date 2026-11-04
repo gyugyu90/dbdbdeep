@@ -122,11 +122,55 @@ final class SQLCompletionEditorTests: XCTestCase {
         XCTAssertNil(coordinator.completion)
     }
 
+    func testMongoTypingAndTabUseCollectionSuggestions() async throws {
+        let (state, view, coordinator) = editor("db.c|", kind: .mongodb)
+        defer { coordinator.stopObserving() }
+        view.keyDown(with: key("u", code: 32))
+        try await Task.sleep(for: .milliseconds(200))
+        XCTAssertEqual(coordinator.completion?.candidates.first?.name, "customers")
+        view.keyDown(with: key("\t", code: 48))
+        XCTAssertEqual(state.text, "db.customers")
+        XCTAssertNil(coordinator.completion)
+    }
+
+    func testMongoLazyFieldsReplaceQuotedKeyAndIgnoreStaleResponse() async throws {
+        var requested: [String] = []
+        let (state, view, coordinator) = editor("db.customers.find({'em|ail': ''})", kind: .mongodb, loadFields: { name in
+            requested.append(name)
+            try? await Task.sleep(for: .milliseconds(50))
+            return [SchemaColumn(name: "email", type: "STRING")]
+        })
+        defer { coordinator.stopObserving() }
+        coordinator.parent.tables = [SchemaTable(name: "customers")]
+        coordinator.updateCompletion(view)
+        XCTAssertNil(coordinator.completion)
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(requested, ["customers"])
+        XCTAssertEqual(coordinator.completion?.candidates.first?.name, "email")
+        XCTAssertTrue(coordinator.textView(view, doCommandBy: #selector(NSResponder.insertTab(_:))))
+        XCTAssertEqual(state.text, "db.customers.find({'email': ''})")
+        view.setSelectedRange(NSRange(location: (view.string as NSString).range(of: "email").location + 2, length: 0))
+        coordinator.updateCompletion(view, explicit: true)
+        view.setSelectedRange(NSRange(location: 0, length: 0))
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertNil(coordinator.completion)
+    }
+
+    func testMongoNavigationAndWhitespaceDoNotOpenSuggestions() async throws {
+        for (characters, code): (String, UInt16) in [(" ", 49), ("\u{7f}", 51), ("\u{f702}", 123), ("\r", 36)] {
+            let (_, view, coordinator) = editor("db.c|u", kind: .mongodb)
+            view.keyDown(with: key(characters, code: code))
+            try await Task.sleep(for: .milliseconds(160))
+            XCTAssertNil(coordinator.completion)
+            coordinator.stopObserving()
+        }
+    }
+
     private func key(_ characters: String, code: UInt16, modifiers: NSEvent.ModifierFlags = []) -> NSEvent {
         NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0, windowNumber: 0, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code)!
     }
 
-    private func editor(_ marked: String) -> (CompletionState, SQLCompletionTextView, SQLTextEditor.Coordinator) {
+    private func editor(_ marked: String, kind: DBConnection.Kind = .sample, loadFields: @escaping (String) async -> [SchemaColumn] = { _ in [] }) -> (CompletionState, SQLCompletionTextView, SQLTextEditor.Coordinator) {
         let cursor = (marked as NSString).range(of: "|").location
         let state = CompletionState(marked.replacingOccurrences(of: "|", with: ""))
         let tables = [
@@ -135,7 +179,7 @@ final class SQLCompletionEditorTests: XCTestCase {
         ]
         let editor = SQLTextEditor(text: Binding(get: { state.text }, set: { state.text = $0 }),
             selection: Binding(get: { state.selection }, set: { state.selection = $0 }),
-            cursorLocation: Binding(get: { state.cursor }, set: { state.cursor = $0 }), tables: tables, connectionKind: .sample)
+            cursorLocation: Binding(get: { state.cursor }, set: { state.cursor = $0 }), tables: tables, connectionKind: kind, loadMongoFields: loadFields)
         let coordinator = SQLTextEditor.Coordinator(editor)
         let scroll = editor.makeScrollView(coordinator: coordinator)
         let view = scroll.documentView as! SQLCompletionTextView

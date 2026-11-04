@@ -9,6 +9,9 @@ struct ResultsView: View {
     @State private var selection: GridSelection?
     @State private var grid = ResultGridState()
     @State private var columnDrag: ColumnDrag?
+    @AppStorage("documentResultsPresentation") private var documentPresentation = "tree"
+
+    private var showsTree: Bool { store.result?.documents != nil && documentPresentation == "tree" }
 
     private struct GridSelection {
         let row: Int
@@ -34,14 +37,20 @@ struct ResultsView: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
-                Image(systemName: "tablecells").font(.system(size: 11)).foregroundStyle(Theme.purple)
+                Image(systemName: showsTree ? "list.bullet.indent" : "tablecells").font(.system(size: 11)).foregroundStyle(Theme.purple)
                 Text(store.error == nil ? "Results" : "Previous result").font(.system(size: 11, weight: .semibold))
                 if let result = store.result {
-                    Text(result.columns.isEmpty ? "\(result.affected) affected" : "\(result.rows.count) \(result.rows.count == 1 ? "row" : "rows")")
+                    Text(result.documents.map { "\($0.count) \($0.count == 1 ? "document" : "documents")" } ?? (result.columns.isEmpty ? "\(result.affected) affected" : "\(result.rows.count) \(result.rows.count == 1 ? "row" : "rows")"))
                         .font(.system(size: 9)).foregroundStyle(Theme.secondary)
                         .padding(.horizontal, 6).padding(.vertical, 3).background(Theme.sidebar, in: Capsule())
                 }
                 Spacer()
+                if store.result?.documents != nil {
+                    Picker("Result view", selection: $documentPresentation) {
+                        Label("Table", systemImage: "tablecells").tag("table")
+                        Label("Tree", systemImage: "list.bullet.indent").tag("tree")
+                    }.pickerStyle(.segmented).labelsHidden().frame(width: 148).accessibilityLabel("Result view")
+                }
                 if let result = store.result {
                     Label(String(format: "%.0f ms", result.elapsed * 1000), systemImage: "clock").font(.system(size: 9)).foregroundStyle(Theme.secondary)
                     IconButton(icon: "square.and.arrow.up", help: "Export all fetched rows as CSV") { store.exportCSV() }.disabled(result.columns.isEmpty)
@@ -54,18 +63,24 @@ struct ResultsView: View {
                     IconButton(icon: "xmark", help: "Dismiss error") { store.error = nil }
                 }.padding(12).background(Theme.tint("peach")).padding(.horizontal, 14).padding(.bottom, 10)
             }
-            if let result = store.result, !result.columns.isEmpty {
+            if let result = store.result, !result.columns.isEmpty || result.documents != nil {
                 HStack {
                     SearchField(placeholder: "Filter results…", text: $filter).frame(maxWidth: 205)
                     Spacer()
-                    Text(result.truncated ? "First 1,000 rows · limit reached" : "All fetched rows").font(.system(size: 9)).foregroundStyle(Theme.secondary)
+                    Text(result.documents != nil ? (result.truncated ? "Fetched documents · limit reached" : "All fetched documents") : (result.truncated ? "First 1,000 rows · limit reached" : "All fetched rows")).font(.system(size: 9)).foregroundStyle(Theme.secondary)
                 }.padding(.horizontal, 16).padding(.bottom, 12)
-                resultTable(result)
+                ZStack {
+                    resultTable(result).opacity(showsTree ? 0 : 1).allowsHitTesting(!showsTree).accessibilityHidden(showsTree)
+                    if let documents = result.documents {
+                        DocumentTreeView(resultID: result.id, documents: documents, indices: displayedRows.map(\.offset))
+                            .id(result.id).opacity(showsTree ? 1 : 0).allowsHitTesting(showsTree).accessibilityHidden(!showsTree)
+                    }
+                }
                 HStack(spacing: 5) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.green)
-                    Text("\(displayedRows.count) \(displayedRows.count == 1 ? "row" : "rows") displayed")
+                    Text("\(displayedRows.count) \(result.documents != nil ? (displayedRows.count == 1 ? "document" : "documents") : (displayedRows.count == 1 ? "row" : "rows")) displayed")
                     Spacer()
-                    Text("Double-click a value to copy").foregroundStyle(Theme.secondary)
+                    Text(showsTree ? "Select a value to inspect or copy" : "Double-click a value to copy").foregroundStyle(Theme.secondary)
                 }.font(.system(size: 9)).padding(.horizontal, 17).frame(height: 31)
             } else {
                 Spacer()
@@ -73,7 +88,7 @@ struct ResultsView: View {
                     Mochi(size: 48)
                     Text(store.result == nil ? "Good things start with a query." : "\(store.result?.affected ?? 0) rows affected. Nicely done.")
                         .font(.system(size: 13, weight: .medium, design: .rounded))
-                    Text(store.result == nil ? "Run your SQL and see what turns up." : "Use Commit to save, or Rollback to undo your DML.")
+                    Text(store.connection?.kind == .mongodb ? "Run a MongoDB query and explore your documents." : store.result == nil ? "Run your SQL and see what turns up." : "Use Commit to save, or Rollback to undo your DML.")
                         .font(.system(size: 11)).foregroundStyle(Theme.secondary)
                 }
                 Spacer()

@@ -10,14 +10,18 @@ struct SQLTextEditor: NSViewRepresentable {
     var tables: [SchemaTable]
     var connectionKind: DBConnection.Kind
     var focusRequest: SQLEditorFocus?
+    var completionContextID: UUID?
+    var loadMongoFields: (String) async -> [SchemaColumn]
 
-    init(text: Binding<String>, selection: Binding<String>, cursorLocation: Binding<Int> = .constant(0), tables: [SchemaTable] = [], connectionKind: DBConnection.Kind = .oracle, focusRequest: SQLEditorFocus? = nil) {
+    init(text: Binding<String>, selection: Binding<String>, cursorLocation: Binding<Int> = .constant(0), tables: [SchemaTable] = [], connectionKind: DBConnection.Kind = .oracle, focusRequest: SQLEditorFocus? = nil, completionContextID: UUID? = nil, loadMongoFields: @escaping (String) async -> [SchemaColumn] = { _ in [] }) {
         _text = text
         _selection = selection
         _cursorLocation = cursorLocation
         self.tables = tables
         self.connectionKind = connectionKind
         self.focusRequest = focusRequest
+        self.completionContextID = completionContextID
+        self.loadMongoFields = loadMongoFields
     }
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -78,7 +82,7 @@ struct SQLTextEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        if context.coordinator.parent.tables != tables || context.coordinator.parent.connectionKind != connectionKind {
+        if context.coordinator.parent.tables != tables || context.coordinator.parent.connectionKind != connectionKind || context.coordinator.parent.completionContextID != completionContextID {
             context.coordinator.dismissCompletion()
         }
         context.coordinator.parent = self
@@ -106,6 +110,7 @@ struct SQLTextEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: SQLTextEditor
         private var completionWork: DispatchWorkItem?
+        private var completionTask: Task<Void, Never>?
         private var completionPanel: SQLCompletionPanel?
         private(set) var completion: SQLCompletionResult?
         private(set) var selectedCompletion = 0
@@ -132,6 +137,7 @@ struct SQLTextEditor: NSViewRepresentable {
             highlightWork?.cancel()
             highlightTask?.cancel()
             completionWork?.cancel()
+            completionTask?.cancel()
         }
 
         func observeScrolling(_ scroll: NSScrollView) {
@@ -289,27 +295,59 @@ struct SQLTextEditor: NSViewRepresentable {
         func updateCompletion(_ view: NSTextView, explicit: Bool = false) {
             dismissCompletion()
             guard !view.hasMarkedText(), view.selectedRange().length == 0 else { return }
-            let engine = SQLCompletionEngine(tables: parent.tables, kind: parent.connectionKind)
+            let tables = parent.tables
+            let kind = parent.connectionKind
+            let engine = SQLCompletionEngine(tables: tables, kind: kind)
             let text = view.string
             let cursor = view.selectedRange().location
+            let analyze = {
+                let result = engine.completions(in: text, atUTF16Offset: cursor, explicit: explicit)
+                let collection = kind == .mongodb ? MongoCompletionEngine(tables: tables).fieldCollection(in: text, atUTF16Offset: cursor) : nil
+                return (result, collection)
+            }
             if (text as NSString).length < 100_000 {
-                completion = engine.completions(in: text, atUTF16Offset: cursor, explicit: explicit)
-                selectedCompletion = 0
-                showCompletion(view)
+                let (result, collection) = analyze()
+                applyCompletion(result, collection: collection, text: text, cursor: cursor, explicit: explicit, in: view)
             } else {
                 let id = completionID
                 let work = DispatchWorkItem { [weak self, weak view] in
-                    let result = engine.completions(in: text, atUTF16Offset: cursor, explicit: explicit)
+                    let (result, collection) = analyze()
                     DispatchQueue.main.async {
                         guard let self, let view, self.completionID == id,
                               view.string == text, view.selectedRange() == NSRange(location: cursor, length: 0), !view.hasMarkedText() else { return }
-                        self.completion = result
-                        self.selectedCompletion = 0
-                        self.showCompletion(view)
+                        self.applyCompletion(result, collection: collection, text: text, cursor: cursor, explicit: explicit, in: view)
                     }
                 }
                 completionWork = work
                 analysisQueue.async(execute: work)
+            }
+        }
+
+        private func applyCompletion(_ result: SQLCompletionResult?, collection: String?, text: String, cursor: Int, explicit: Bool, in view: NSTextView) {
+            completion = result
+            selectedCompletion = 0
+            showCompletion(view)
+            guard let collection else { return }
+            let id = completionID
+            let loadFields = parent.loadMongoFields
+            let tables = parent.tables
+            completionTask = Task { @MainActor [weak self, weak view] in
+                let fields = await loadFields(collection)
+                guard !Task.isCancelled, !fields.isEmpty, let self, let view, self.completionID == id,
+                      view.string == text, view.selectedRange() == NSRange(location: cursor, length: 0), !view.hasMarkedText() else { return }
+                let schema = tables.map { $0.name == collection ? SchemaTable(name: $0.name, columns: fields) : $0 }
+                let engine = MongoCompletionEngine(tables: schema)
+                let result: SQLCompletionResult?
+                if text.utf16.count < 100_000 { result = engine.completions(in: text, atUTF16Offset: cursor, explicit: explicit) }
+                else {
+                    result = await Task.detached(priority: .userInitiated) {
+                        engine.completions(in: text, atUTF16Offset: cursor, explicit: explicit)
+                    }.value
+                }
+                guard !Task.isCancelled, self.completionID == id else { return }
+                self.completion = result
+                self.selectedCompletion = 0
+                self.showCompletion(view)
             }
         }
 
@@ -338,6 +376,8 @@ struct SQLTextEditor: NSViewRepresentable {
             completionID = UUID()
             completionWork?.cancel()
             completionWork = nil
+            completionTask?.cancel()
+            completionTask = nil
             completion = nil
             completionPanel?.dismiss()
         }

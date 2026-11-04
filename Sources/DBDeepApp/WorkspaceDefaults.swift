@@ -10,7 +10,8 @@ enum WorkspaceDefaults {
     }
 
     static func query(for kind: DBConnection.Kind?) -> String {
-        kind == .oracle ? "-- Hello, Oracle ✨\nSELECT *\nFROM user_tables\nFETCH FIRST 100 ROWS ONLY;" : sampleQuery
+        if kind == .mongodb { return "{\n  \"ping\": 1\n}" }
+        return kind == .oracle ? "-- Hello, Oracle ✨\nSELECT *\nFROM user_tables\nFETCH FIRST 100 ROWS ONLY;" : sampleQuery
     }
 
     static func makeWorkspace() -> WorkspaceState {

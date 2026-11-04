@@ -46,7 +46,11 @@ struct ResultGridState {
 
     func rows(in result: QueryResult, filter: String) -> [(offset: Int, element: [String?])] {
         let rows = Array(result.rows.enumerated()).filter { row in
-            filter.isEmpty || row.element.contains { $0?.localizedCaseInsensitiveContains(filter) == true }
+            if filter.isEmpty { return true }
+            if let documents = result.documents, documents.indices.contains(row.offset) {
+                return documents[row.offset].localizedCaseInsensitiveContains(filter)
+            }
+            return row.element.contains { $0?.localizedCaseInsensitiveContains(filter) == true }
         }
         guard resultID == result.id, let column = sortColumn, result.columns.indices.contains(column) else { return rows }
         func value(_ row: [String?]) -> String? { row.indices.contains(column) ? row[column] : nil }

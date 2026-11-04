@@ -43,6 +43,7 @@ final class AppStore: ObservableObject {
     private let workspaceFiles: WorkspaceFileStore
     private let sessions: DatabaseSessions
     private let readPassword: (UUID) throws -> String
+    private var workspaceLoadError: String?
     private var drafts: [String: String] = [:]
     private var persistWork: DispatchWorkItem?
     private var schemaByConnection: [UUID: [SchemaTable]] = [:]
@@ -52,6 +53,8 @@ final class AppStore: ObservableObject {
     private var cachedCursorTarget: Cached<SQLStatement?>?
     private var cachedBookmarkKey: Cached<[String]?>?
 
+    var queryLanguage: QueryLanguage { QueryLanguage(connection?.kind) }
+    var canUseTransactions: Bool { connection?.supportsTransactions == true && isConnected && !isBusy }
     var connection: DBConnection? { connections.first { $0.id == selectedID } }
     var result: QueryResult? { selectedID.flatMap { results[$0] } }
     var isConnected: Bool { selectedID.map { connectedIDs.contains($0) } ?? false }
@@ -63,9 +66,9 @@ final class AppStore: ObservableObject {
     }
     var cursorStatement: SQLStatement? {
         if let cachedCursorTarget { return cachedCursorTarget.value }
-        let statements = cachedStatements ?? SQLStatementLocator.statements(in: query)
+        let statements = cachedStatements ?? queryLanguage.statements(in: query)
         cachedStatements = statements
-        let statement = SQLStatementLocator.statementAtOrBefore(in: query, atUTF16Offset: cursorLocation, using: statements)
+        let statement = queryLanguage.statementAtOrBefore(in: query, atUTF16Offset: cursorLocation, using: statements)
         cachedCursorTarget = Cached(value: statement)
         return statement
     }
@@ -87,11 +90,11 @@ final class AppStore: ObservableObject {
         let key: [String]?
         if let cachedBookmarkKey { key = cachedBookmarkKey.value }
         else {
-            key = SQLStatementLocator.comparisonKey(for: sqlToBookmark)
+            key = queryLanguage.comparisonKey(for: sqlToBookmark)
             cachedBookmarkKey = Cached(value: key)
         }
         guard let key else { return nil }
-        return connectionBookmarks.first { SQLStatementLocator.comparisonKey(for: $0.sql) == key }
+        return connectionBookmarks.first { queryLanguage.comparisonKey(for: $0.sql) == key }
     }
     var filteredTables: [SchemaTable] { tables.filter { schemaSearch.isEmpty || $0.name.localizedCaseInsensitiveContains(schemaSearch) } }
     var filteredBookmarks: [QueryBookmark] {
@@ -99,18 +102,22 @@ final class AppStore: ObservableObject {
     }
 
     init(directory: URL? = nil,
-         makeOracleSession: @escaping (DBConnection, URL) -> any OracleConnectionSession = { OracleDatabase(connection: $0, runtime: $1) },
+         makeOracleSession: @escaping (DBConnection, URL) -> any DatabaseConnectionSession = { OracleDatabase(connection: $0, runtime: $1) },
+         makeMongoSession: @escaping (DBConnection, URL) -> any DatabaseConnectionSession = { MongoDatabase(connection: $0, runtime: $1) },
          readPassword: @escaping (UUID) throws -> String = { try PasswordKeychain.read(for: $0) }) {
         self.readPassword = readPassword
         let workspaceDirectory = directory ?? WorkspaceDefaults.directory
         workspaceFiles = WorkspaceFileStore(directory: workspaceDirectory)
-        sessions = DatabaseSessions(directory: workspaceDirectory, runtime: DatabaseSessions.bundledOracleRuntime, makeOracleSession: makeOracleSession)
+        sessions = DatabaseSessions(directory: workspaceDirectory, runtime: DatabaseSessions.bundledRuntime, makeOracleSession: makeOracleSession, makeMongoSession: makeMongoSession)
         do {
             let state = try workspaceFiles.load() ?? WorkspaceDefaults.makeWorkspace()
             connections = state.connections; bookmarks = state.bookmarks; drafts = state.drafts
             selectedID = state.selectedConnection ?? connections.first?.id
             query = selectedID.flatMap { drafts[$0.uuidString] } ?? defaultQuery
-        } catch { self.error = "작업 공간을 읽을 수 없습니다: \(error.localizedDescription)" }
+        } catch {
+            workspaceLoadError = "작업 공간을 읽을 수 없습니다. 원본 설정 파일을 보호하기 위해 저장을 중단했습니다: \(error.localizedDescription)"
+            self.error = workspaceLoadError
+        }
     }
 
     static let sampleQuery = WorkspaceDefaults.sampleQuery
@@ -137,7 +144,7 @@ final class AppStore: ObservableObject {
 
     private func beginAttempt(_ target: DBConnection, purpose: String, savedPassword: Bool) -> UUID {
         var attempt = ConnectionAttempt(connection: target, purpose: purpose)
-        attempt.record(ConnectionEvent(stage: .credentials, message: savedPassword ? "macOS Keychain에서 저장된 비밀번호를 읽습니다." : "입력한 비밀번호를 사용합니다. 로그에는 포함하지 않습니다."))
+        attempt.record(ConnectionEvent(stage: .credentials, message: !target.needsPassword ? "인증 없이 연결합니다. Keychain을 사용하지 않습니다." : savedPassword ? "macOS Keychain에서 저장된 비밀번호를 읽습니다." : "입력한 비밀번호를 사용합니다. 로그에는 포함하지 않습니다."))
         connectionAttempts[target.id] = attempt
         return attempt.id
     }
@@ -160,8 +167,8 @@ final class AppStore: ObservableObject {
         defer { isBusy = false }
         let attemptID = beginAttempt(target, purpose: "Test connection", savedPassword: password.isEmpty)
         do {
-            let secret = try password.isEmpty ? readPassword(target.id) : password
-            record(ConnectionEvent(stage: .credentials, level: .success, message: "접속 계정을 준비했습니다 · \(target.username)"), connectionID: target.id, attemptID: attemptID)
+            let secret = try target.needsPassword ? (password.isEmpty ? readPassword(target.id) : password) : ""
+            record(ConnectionEvent(stage: .credentials, level: .success, message: "접속 계정을 준비했습니다 · \(target.needsPassword ? target.username : "No authentication")"), connectionID: target.id, attemptID: attemptID)
             try await sessions.testConnection(target, password: secret) { [weak self] event in
                 await self?.record(event, connectionID: target.id, attemptID: attemptID)
             }
@@ -186,19 +193,19 @@ final class AppStore: ObservableObject {
             } else {
                 let identifier = beginAttempt(target, purpose: purpose, savedPassword: password == nil)
                 attemptID = identifier
-                let secret = try password ?? readPassword(target.id)
-                record(ConnectionEvent(stage: .credentials, level: .success, message: "접속 계정을 준비했습니다 · \(target.username)"), connectionID: target.id, attemptID: identifier)
+                let secret = try target.needsPassword ? (password ?? readPassword(target.id)) : ""
+                record(ConnectionEvent(stage: .credentials, level: .success, message: "접속 계정을 준비했습니다 · \(target.needsPassword ? target.username : "No authentication")"), connectionID: target.id, attemptID: identifier)
                 try await sessions.connect(target, password: secret) { [weak self] event in
                     await self?.record(event, connectionID: target.id, attemptID: identifier)
                 }
             }
             connectedIDs.insert(target.id)
             status = "Connected · \(target.name)"
-            if let attemptID { record(ConnectionEvent(stage: .schema, message: "현재 계정의 테이블·뷰·컬럼을 조회합니다."), connectionID: target.id, attemptID: attemptID) }
+            if let attemptID { record(ConnectionEvent(stage: .schema, message: target.kind == .mongodb ? "데이터베이스의 컬렉션을 조회합니다." : "현재 계정의 테이블·뷰·컬럼을 조회합니다."), connectionID: target.id, attemptID: attemptID) }
             do {
                 try await loadSchema(target)
                 if let attemptID {
-                    record(ConnectionEvent(stage: .schema, level: .success, message: "스키마를 불러왔습니다 · \(schemaByConnection[target.id]?.count ?? 0) tables / views"), connectionID: target.id, attemptID: attemptID)
+                    record(ConnectionEvent(stage: .schema, level: .success, message: "스키마를 불러왔습니다 · \(schemaByConnection[target.id]?.count ?? 0) \(target.kind == .mongodb ? "collections" : "tables / views")"), connectionID: target.id, attemptID: attemptID)
                     connectionAttempts[target.id]?.finish(.succeeded)
                 }
             } catch {
@@ -219,9 +226,10 @@ final class AppStore: ObservableObject {
 
     func saveConnection(_ target: DBConnection, password: String) async -> Bool {
         guard !isBusy else { return false }
+        guard workspaceLoadError == nil else { error = workspaceLoadError; return false }
         do {
-            if !password.isEmpty { try PasswordKeychain.save(password, for: target.id) }
-            else { _ = try PasswordKeychain.read(for: target.id) }
+            if target.needsPassword && !password.isEmpty { try PasswordKeychain.save(password, for: target.id) }
+            else if target.needsPassword { _ = try PasswordKeychain.read(for: target.id) }
             await sessions.disconnect(target)
             connectedIDs.remove(target.id)
             schemaByConnection.removeValue(forKey: target.id)
@@ -268,6 +276,12 @@ final class AppStore: ObservableObject {
         do { try await loadSchema(connection) } catch { self.error = error.localizedDescription }
     }
 
+    func mongoFields(in collection: String) async -> [SchemaColumn] {
+        guard let connection, connection.kind == .mongodb, isConnected, !isBusy,
+              tables.contains(where: { $0.name == collection }) else { return [] }
+        return (try? await sessions.collectionFields(collection, on: connection)) ?? []
+    }
+
     func run() async {
         guard let connection, canRunQuery else { return }
         let sql = sqlToRun
@@ -289,9 +303,9 @@ final class AppStore: ObservableObject {
             catch { status += " · schema refresh unavailable" }
             persist()
         } catch {
-            if connection.kind == .oracle && sessions.contains(connection) {
+            if connection.kind != .sample && sessions.contains(connection) {
                 do { try await sessions.validate(connection) }
-                catch { await invalidateOracleSession(connection) }
+                catch { await invalidateSession(connection) }
             }
             self.error = error.localizedDescription
             status = connectedIDs.contains(connection.id) ? "Query needs a little attention" : "Connection lost · run again to reconnect"
@@ -308,14 +322,14 @@ final class AppStore: ObservableObject {
                 connectedIDs.insert(target.id)
                 return true
             } catch {
-                await invalidateOracleSession(target)
+                await invalidateSession(target)
             }
         }
         status = "Connecting before query…"
         return await openConnection(target, purpose: "Connect before query")
     }
 
-    private func invalidateOracleSession(_ target: DBConnection) async {
+    private func invalidateSession(_ target: DBConnection) async {
         connectedIDs.remove(target.id)
         results.removeValue(forKey: target.id)
         schemaByConnection.removeValue(forKey: target.id)
@@ -324,7 +338,7 @@ final class AppStore: ObservableObject {
     }
 
     func transaction(commit: Bool) async {
-        guard let connection, isConnected, !isBusy else { return }
+        guard let connection, canUseTransactions else { return }
         isBusy = true; error = nil
         defer { isBusy = false }
         do {
@@ -336,7 +350,7 @@ final class AppStore: ObservableObject {
     }
 
     func browse(_ table: SchemaTable) {
-        query = connection?.kind == .oracle
+        query = connection?.kind == .mongodb ? QueryLanguage.browseCollection(table.name) : connection?.kind == .oracle
             ? "SELECT *\nFROM \(SQLIdentifier.quote(table.name))\nFETCH FIRST 100 ROWS ONLY;"
             : "SELECT *\nFROM \(SQLIdentifier.quote(table.name))\nLIMIT 100;"
         selectedSQL = ""
@@ -345,14 +359,14 @@ final class AppStore: ObservableObject {
     }
 
     func canRunBookmark(_ bookmark: QueryBookmark) -> Bool {
-        !isBusy && connection != nil && bookmark.connectionID == connection?.id && SQLStatementLocator.singleStatement(in: bookmark.sql) != nil
+        !isBusy && connection != nil && bookmark.connectionID == connection?.id && queryLanguage.singleStatement(in: bookmark.sql) != nil
     }
 
     @discardableResult
     func focusBookmark(_ bookmark: QueryBookmark, reportErrors: Bool = true) -> Bool {
         guard !isBusy, let connection, bookmark.connectionID == connection.id else { return false }
         do {
-            let target = try SavedQueryFocus.resolve(bookmarkSQL: bookmark.sql, in: query, cursor: cursorLocation)
+            let target = try SavedQueryFocus.resolve(bookmarkSQL: bookmark.sql, in: query, cursor: cursorLocation, kind: connection.kind)
             query = target.sql
             selectedSQL = ""; cursorLocation = target.range.location
             editorFocusRequest = SQLEditorFocus(range: target.range)
@@ -368,7 +382,7 @@ final class AppStore: ObservableObject {
 
     func runBookmark(_ bookmark: QueryBookmark) async {
         guard canRunBookmark(bookmark), let connection,
-              let statement = SQLStatementLocator.singleStatement(in: bookmark.sql) else { return }
+              let statement = queryLanguage.singleStatement(in: bookmark.sql) else { return }
         focusBookmark(bookmark, reportErrors: false)
         await execute(statement.text, on: connection)
     }
@@ -394,7 +408,7 @@ final class AppStore: ObservableObject {
     @discardableResult
     func saveBookmark(_ bookmark: QueryBookmark) -> Bool {
         guard !isBusy, let connection, bookmark.connectionID == connection.id,
-              let statement = SQLStatementLocator.singleStatement(in: bookmark.sql) else { return false }
+              let statement = queryLanguage.singleStatement(in: bookmark.sql) else { return false }
         var saved = bookmark
         saved.sql = statement.text
         if let index = bookmarks.firstIndex(where: { $0.id == saved.id }) {
@@ -417,7 +431,10 @@ final class AppStore: ObservableObject {
         editingBookmark = currentBookmark
         showBookmark = true
     }
-    func newConnection() { editingConnection = nil; showConnection = true }
+    func newConnection() {
+        guard workspaceLoadError == nil else { error = workspaceLoadError; return }
+        editingConnection = nil; showConnection = true
+    }
 
     func queryChanged() {
         persistWork?.cancel()
@@ -427,6 +444,7 @@ final class AppStore: ObservableObject {
     }
 
     func persist() {
+        guard workspaceLoadError == nil else { error = workspaceLoadError; return }
         if let selectedID { drafts[selectedID.uuidString] = query }
         let state = WorkspaceState(connections: connections, bookmarks: bookmarks, drafts: drafts, selectedConnection: selectedID)
         do { try workspaceFiles.save(state) }

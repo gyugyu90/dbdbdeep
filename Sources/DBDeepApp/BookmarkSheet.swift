@@ -12,7 +12,7 @@ struct BookmarkSheet: View {
     @State private var selectedSQL = ""
     @State private var connectionID: UUID?
     private let emojis = ["✨", "🌷", "🧺", "⚡️", "🍑", "🌱", "☁️", "🪄", "📊", "✏️", "🧸", "🐳"]
-    private var hasSingleStatement: Bool { SQLStatementLocator.singleStatement(in: sql) != nil }
+    private var hasSingleStatement: Bool { QueryLanguage(bookmarkConnection?.kind).singleStatement(in: sql) != nil }
     private var bookmarkConnection: DBConnection? { store.connections.first { $0.id == connectionID } }
 
     var body: some View {
@@ -64,10 +64,10 @@ struct BookmarkSheet: View {
                 }
             }
             VStack(alignment: .leading, spacing: 8) {
-                Text("SQL").font(.system(size: 11, weight: .medium))
-                SQLTextEditor(text: $sql, selection: $selectedSQL).frame(height: 165)
+                Text(bookmarkConnection?.kind == .mongodb ? "MongoDB query" : "SQL").font(.system(size: 11, weight: .medium))
+                SQLTextEditor(text: $sql, selection: $selectedSQL, connectionKind: bookmarkConnection?.kind ?? .oracle).frame(height: 165)
                     .clipShape(RoundedRectangle(cornerRadius: 9)).overlay(RoundedRectangle(cornerRadius: 9).stroke(Theme.line, lineWidth: 1))
-                Text("One SQL statement or PL/SQL block per bookmark.")
+                Text(bookmarkConnection?.kind == .mongodb ? "One MongoDB query or JSON command per bookmark." : "One SQL statement or PL/SQL block per bookmark.")
                     .font(.system(size: 10)).foregroundStyle(hasSingleStatement || sql.isEmpty ? Theme.secondary : Theme.accent("peach"))
             }
             HStack {

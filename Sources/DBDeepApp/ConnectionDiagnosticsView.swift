@@ -56,28 +56,42 @@ struct ConnectionDiagnosticsView: View {
                             .font(.system(size: 10)).foregroundStyle(Theme.accent("peach"))
                     }
                     VStack(alignment: .leading, spacing: 10) {
-                        detail("Host / port", "\(target.host):\(target.port)")
-                        detail(target.usesSID ? "SID" : "Service name", target.service)
-                        detail("Username", target.username.isEmpty ? "—" : target.username)
-                        detail("Driver", "Oracle JDBC Thin · TCP")
-                        detail("Charset library", target.usesBundledInternationalization ? "Bundled orai18n.jar" : "Not selected")
-                        if !target.additionalJARs.isEmpty {
-                            VStack(alignment: .leading, spacing: 5) {
-                                Text("Additional JARs").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.secondary)
-                                ForEach(target.additionalJARs, id: \.self) { path in
-                                    Text(path).font(.system(size: 9, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                        if target.kind == .mongodb {
+                            detail("Hosts", target.host)
+                            if !target.mongoSRV { detail("Default port", String(target.port)) }
+                            detail("Database", target.service)
+                            detail("Auth database", target.effectiveMongoAuthSource)
+                            detail("Username", target.username.isEmpty ? "No authentication" : target.username)
+                            detail("Driver", "MongoDB Java sync")
+                            detail("TLS / SRV", "\(target.mongoTLS || target.mongoSRV ? "TLS on" : "TLS off") · \(target.mongoSRV ? "SRV" : "Standard")")
+                            if !target.mongoReplicaSet.isEmpty { detail("Replica set", target.mongoReplicaSet) }
+                            Text(target.mongoURI).font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
+                            Text("TCP 8s · server selection 10s · read 60s\nCheck: {\"ping\": 1}")
+                                .font(.system(size: 9)).foregroundStyle(Theme.secondary)
+                        } else {
+                            detail("Host / port", "\(target.host):\(target.port)")
+                            detail(target.usesSID ? "SID" : "Service name", target.service)
+                            detail("Username", target.username.isEmpty ? "—" : target.username)
+                            detail("Driver", "Oracle JDBC Thin · TCP")
+                            detail("Charset library", target.usesBundledInternationalization ? "Bundled orai18n.jar" : "Not selected")
+                            if !target.additionalJARs.isEmpty {
+                                VStack(alignment: .leading, spacing: 5) {
+                                    Text("Additional JARs").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.secondary)
+                                    ForEach(target.additionalJARs, id: \.self) { path in
+                                        Text(path).font(.system(size: 9, design: .monospaced)).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                                    }
                                 }
                             }
+                            VStack(alignment: .leading, spacing: 6) {
+                                Text("JDBC URL").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.secondary)
+                                Text(target.jdbcURL).font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
+                                    .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(10).background(Theme.surface, in: RoundedRectangle(cornerRadius: 7))
+                            }
+                            Text("TCP 8s · connection establishment 10s\nRead 70s · verification query 10s")
+                                .font(.system(size: 9)).foregroundStyle(Theme.secondary).lineSpacing(3)
+                            Text("Check: SELECT 1 FROM DUAL").font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.secondary)
                         }
-                        VStack(alignment: .leading, spacing: 6) {
-                            Text("JDBC URL").font(.system(size: 9, weight: .semibold)).foregroundStyle(Theme.secondary)
-                            Text(target.jdbcURL).font(.system(size: 10, design: .monospaced)).textSelection(.enabled)
-                                .fixedSize(horizontal: false, vertical: true).frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(10).background(Theme.surface, in: RoundedRectangle(cornerRadius: 7))
-                        }
-                        Text("TCP 8s · connection establishment 10s\nRead 70s · verification query 10s")
-                            .font(.system(size: 9)).foregroundStyle(Theme.secondary).lineSpacing(3)
-                        Text("Check: SELECT 1 FROM DUAL").font(.system(size: 9, design: .monospaced)).foregroundStyle(Theme.secondary)
                     }
                     if let attempt {
                         Rectangle().fill(Theme.line).frame(height: 1)
@@ -102,7 +116,7 @@ struct ConnectionDiagnosticsView: View {
                         if let failure = attempt.failure {
                             VStack(alignment: .leading, spacing: 8) {
                                 Text("Check next").font(.system(size: 11, weight: .semibold))
-                                Text(failure.suggestion).font(.system(size: 10)).lineSpacing(4).fixedSize(horizontal: false, vertical: true)
+                                Text(failure.suggestion(for: target)).font(.system(size: 10)).lineSpacing(4).fixedSize(horizontal: false, vertical: true)
                                 if let url = failure.documentationURL { Link("Oracle error reference ↗", destination: url).font(.system(size: 10)).foregroundStyle(Theme.purple) }
                             }.padding(12).frame(maxWidth: .infinity, alignment: .leading).background(Theme.tint("peach"), in: RoundedRectangle(cornerRadius: 8))
                             DisclosureGroup("Original error", isExpanded: $showOriginal) {
@@ -116,7 +130,7 @@ struct ConnectionDiagnosticsView: View {
                             }.font(.system(size: 10, weight: .medium))
                         }
                     } else {
-                        Text("Test connection을 누르면 실제 연결 단계와 소요 시간이 표시됩니다. 접속·인증은 Oracle 드라이버가 함께 처리합니다.")
+                        Text("Test connection을 누르면 실제 연결 단계와 소요 시간이 표시됩니다. 선택한 데이터베이스 드라이버가 접속·인증을 처리합니다.")
                             .font(.system(size: 10)).foregroundStyle(Theme.secondary).lineSpacing(4)
                     }
                 }.padding(.trailing, 5).padding(.bottom, 8).themedScrollbars()

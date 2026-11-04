@@ -5,24 +5,26 @@ import DBDeepCore
 final class DatabaseSessions {
     private let directory: URL
     private let runtime: URL
-    private let makeOracleSession: (DBConnection, URL) -> any OracleConnectionSession
+    private let makeOracleSession: (DBConnection, URL) -> any DatabaseConnectionSession
+    private let makeMongoSession: (DBConnection, URL) -> any DatabaseConnectionSession
     private var sqlite: SQLiteDatabase?
-    private var oracle: [UUID: any OracleConnectionSession] = [:]
+    private var remote: [UUID: any DatabaseConnectionSession] = [:]
 
-    init(directory: URL, runtime: URL, makeOracleSession: @escaping (DBConnection, URL) -> any OracleConnectionSession) {
+    init(directory: URL, runtime: URL, makeOracleSession: @escaping (DBConnection, URL) -> any DatabaseConnectionSession, makeMongoSession: @escaping (DBConnection, URL) -> any DatabaseConnectionSession) {
         self.directory = directory
         self.runtime = runtime
         self.makeOracleSession = makeOracleSession
+        self.makeMongoSession = makeMongoSession
     }
 
-    static var bundledOracleRuntime: URL {
+    static var bundledRuntime: URL {
         if let bundled = Bundle.main.resourceURL?.appendingPathComponent("Oracle"),
            FileManager.default.fileExists(atPath: bundled.path) { return bundled }
         return URL(fileURLWithPath: FileManager.default.currentDirectoryPath).appendingPathComponent(".oracle")
     }
 
     func contains(_ connection: DBConnection) -> Bool {
-        connection.kind == .sample ? sqlite != nil : oracle[connection.id] != nil
+        connection.kind == .sample ? sqlite != nil : remote[connection.id] != nil
     }
 
     func connect(_ connection: DBConnection, password: String = "", onEvent: @escaping ConnectionEventHandler = { _ in }) async throws {
@@ -34,14 +36,14 @@ final class DatabaseSessions {
                 sqlite = database
             }
         } else {
-            let database = makeOracleSession(connection, runtime)
+            let database = connection.kind == .mongodb ? makeMongoSession(connection, runtime) : makeOracleSession(connection, runtime)
             try await database.connect(password: password, onEvent: onEvent)
-            oracle[connection.id] = database
+            remote[connection.id] = database
         }
     }
 
     func testConnection(_ connection: DBConnection, password: String, onEvent: @escaping ConnectionEventHandler) async throws {
-        let database = makeOracleSession(connection, runtime)
+        let database = connection.kind == .mongodb ? makeMongoSession(connection, runtime) : makeOracleSession(connection, runtime)
         do { try await database.connect(password: password, onEvent: onEvent) }
         catch {
             await database.disconnect()
@@ -54,7 +56,7 @@ final class DatabaseSessions {
         if connection.kind == .sample {
             guard sqlite != nil else { throw DatabaseError("먼저 연결해 주세요.") }
         } else {
-            try await oracleSession(for: connection).validateConnection()
+            try await remoteSession(for: connection).validateConnection()
         }
     }
 
@@ -70,7 +72,7 @@ final class DatabaseSessions {
                 throw error
             }
         }
-        return try await oracleSession(for: connection).execute(sql)
+        return try await remoteSession(for: connection).execute(sql)
     }
 
     func schema(for connection: DBConnection) async throws -> [SchemaTable] {
@@ -78,26 +80,31 @@ final class DatabaseSessions {
             guard let sqlite else { throw DatabaseError("먼저 연결해 주세요.") }
             return try await sqlite.schema()
         }
-        return try await oracleSession(for: connection).schema()
+        return try await remoteSession(for: connection).schema()
     }
 
     func transaction(on connection: DBConnection, commit: Bool) async throws {
+        guard connection.supportsTransactions else { throw DatabaseError("MongoDB writes are applied immediately.") }
         if connection.kind == .sample {
             guard let sqlite else { throw DatabaseError("먼저 연결해 주세요.") }
             _ = try await sqlite.execute(commit ? "COMMIT; BEGIN" : "ROLLBACK; BEGIN")
         } else {
-            let database = try oracleSession(for: connection)
+            let database = try remoteSession(for: connection)
             _ = try await (commit ? database.commit() : database.rollback())
         }
     }
 
-    func disconnect(_ connection: DBConnection) async {
-        if connection.kind == .sample { sqlite = nil }
-        else if let database = oracle.removeValue(forKey: connection.id) { await database.disconnect() }
+    func collectionFields(_ name: String, on connection: DBConnection) async throws -> [SchemaColumn] {
+        try await remoteSession(for: connection).collectionFields(name)
     }
 
-    private func oracleSession(for connection: DBConnection) throws -> any OracleConnectionSession {
-        guard let database = oracle[connection.id] else { throw DatabaseError("먼저 Oracle에 연결해 주세요.") }
+    func disconnect(_ connection: DBConnection) async {
+        if connection.kind == .sample { sqlite = nil }
+        else if let database = remote.removeValue(forKey: connection.id) { await database.disconnect() }
+    }
+
+    private func remoteSession(for connection: DBConnection) throws -> any DatabaseConnectionSession {
+        guard let database = remote[connection.id] else { throw DatabaseError("먼저 데이터베이스에 연결해 주세요.") }
         return database
     }
 }

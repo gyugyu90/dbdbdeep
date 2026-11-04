@@ -1,8 +1,8 @@
 # dbdbdeep
 
-A cheerful macOS app for exploring Oracle databases, running SQL, and keeping your favorite queries close. Includes a local SQLite playground to try things out without a server.
+A cheerful macOS app for exploring Oracle and MongoDB databases, running queries, and keeping your favorite queries close. Includes a local SQLite playground to try things out without a server.
 
-**Version 0.2.0**
+**Version 0.3.2**
 
 ## Get started
 
@@ -10,7 +10,7 @@ A cheerful macOS app for exploring Oracle databases, running SQL, and keeping yo
 2. Open the DMG and drag **dbdbdeep.app** into **Applications**.
 3. Open dbdbdeep from Applications, then eject the disk image.
 
-Requires **macOS 14 or later** on an **Apple Silicon Mac**. Java and the Oracle drivers are included. This early build is locally signed and has not been notarized by Apple.
+Requires **macOS 14 or later** on an **Apple Silicon Mac**. Java and the database drivers are included. This early build is locally signed and has not been notarized by Apple.
 
 Your first launch opens **Little playground**, with sample tables ready to explore.
 
@@ -40,13 +40,43 @@ Passwords stay in macOS Keychain. Click the info icon beside **Password** for de
 
 If connecting fails, **Connection details** shows the attempted settings, progress, and error details. You can copy the report without including your password. For character-set errors such as ORA-17056, enable **Bundled orai18n.jar** under **Driver libraries**. It's on by default. Use **Add JAR…** for additional libraries; keep those files at their selected locations.
 
+## Connect to MongoDB (latest source build)
+
+1. Click **Add connection** and select **MongoDB**.
+2. Paste your connection string into **Connection URI** and click **Import URI**, or enter the hosts, default port (`27017`), and database manually. Multiple hosts can be separated by commas, with a separate `:port` for each host. The URI importer supports `authSource`, `tls`/`ssl`, and `replicaSet`; unsupported options are reported.
+3. Add a username and password when authentication is enabled. **Authentication DB** is optional: leave it blank to use the selected database, or enter the database where the user was created (for example `admin`). A URI with no database or `authSource` defaults authentication to `admin`. Leave credentials blank for a server without authentication.
+4. Enable **TLS** if required. For Atlas, use the cluster hostname and enable **DNS SRV (Atlas)**; TLS is enabled automatically and the port is discovered. Set **Replica set** when needed.
+5. Click **Test connection**, then **Save & connect**. Click a collection in the left sidebar to preview its documents.
+
+The console accepts familiar [MongoDB find queries](https://www.mongodb.com/docs/manual/reference/method/db.collection.find/):
+
+```javascript
+db.customers.find({status: 'active'}).sort({name: 1}).limit(100)
+```
+
+Supported helpers are `find()` and `findOne()`, including the optional projection argument, `db.getCollection("name")`, and `db["name"]`. `find()` supports `.sort()`, `.skip()`, `.limit()`, `.batchSize()`, `.maxTimeMS()`, `.pretty()`, and `.toArray()`. Document literals can use unquoted field names, single-quoted strings, `ObjectId()`, `ISODate()`, and regular expressions. Each complete query can be run or bookmarked at the cursor. The console supports these query helpers rather than general JavaScript programs.
+
+[JSON commands](https://www.mongodb.com/docs/manual/reference/command/) and `db.runCommand({...})` also work:
+
+```json
+{"find": "customers", "filter": {"status": "active"}, "limit": 100}
+```
+
+Use JSON `insert`, `update`, and `delete` commands for writes, or `aggregate` with a pipeline. Put the command name first. Each command can be saved in the connection’s library. The app shows up to 1,000 documents. The `find` command supports `filter`, `projection`, `sort`, `skip`, `limit`, `batchSize`, and `maxTimeMS`; `aggregate` supports `pipeline`, `cursor.batchSize`, `allowDiskUse`, and `maxTimeMS`.
+
+MongoDB results open in **Tree** view. Expand or collapse documents, objects, and arrays with the disclosure arrows; BSON types such as ObjectId, Date, Int64, and Decimal128 stay distinguishable. Select a field to inspect or copy its value. Switch between **Table** and **Tree** above the results without rerunning the query; your view preference and expanded branches are retained while browsing the same result. Filtering searches the fetched documents, including nested fields. Table cells show previews of long values; Tree retains the full fetched values. Details load in the background as a compact preview of up to 4,096 characters, with limits on depth and entries. **Copy value** prepares the full selected value in the background when clicked.
+
+Autocomplete suggests collections after `db.` or inside `getCollection("…")`, supported helper methods, and fields in filters, projections, and sorts. JSON command collection names and field keys work too. Matches are ranked like SQL suggestions; use `↑`/`↓` and `Tab`/`Return`, or request suggestions with `Control-Space`. Connect first. Field suggestions sample up to 10 documents from the collection being edited and cache names and types for one minute; fields missing from that sample may not appear. Nested fields use dotted paths.
+
+**MongoDB writes are applied immediately.** Manual commit, rollback, and multi-command transactions are unavailable.
+
 ## Run queries
 
 - The query console supports up to 100,000 lines. Longer input is truncated with a warning.
 - Place the cursor in a SQL statement and click **Run statement** or press `⌘↵` (Return or keypad Enter) to run just that statement. In the whitespace between statements or after the final query, both Run statement and bookmarking target the nearest statement before the cursor. Separate statements with semicolons. Selecting text switches to **Run selection**, which runs only the selected text. Oracle accepts one SQL statement or PL/SQL block at a time.
 - Schema suggestions appear as you type: tables after `FROM` or `JOIN`, and columns in expressions such as `SELECT` and `WHERE`. Table aliases work too (`c.`). Use `↑`/`↓` to choose, `Tab` or `Return` to insert, `Esc` to close, or `Control-Space` to request suggestions. Connect first to load your Oracle schema.
 - Before running SQL, the app checks the session and reconnects if needed. If the connection fails during execution, the query is not automatically repeated; check the outcome before running it again.
-- Changes use **manual commit**. Press `⌘⇧↵` to commit, or choose **Query → Rollback changes** to undo uncommitted changes. Oracle DDL follows its [implicit commit rules](https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/COMMIT.html).
+- Oracle and SQLite changes use **manual commit**. Press `⌘⇧↵` to commit, or choose **Query → Rollback changes** to undo uncommitted changes. Oracle DDL follows its [implicit commit rules](https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/COMMIT.html).
 - Results show up to 1,000 rows. Filter the fetched rows, double-click a value to copy it, or press `⌘⇧E` to export them as CSV. Export includes all fetched rows, regardless of the filter; long Oracle text values are previews.
 - Click a column name to toggle ascending/descending sorting for that column. Drag its right edge to resize it, or its left handle to reorder columns. These adjustments apply to fetched results and reset with each new result; CSV export keeps the original query order.
 - Open **History** to reload a recent query without running it.

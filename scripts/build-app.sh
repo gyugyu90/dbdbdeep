@@ -33,6 +33,25 @@ download_oracle_jar() {
 }
 download_oracle_jar ojdbc11 jdbc
 download_oracle_jar orai18n nls
+TASK_MONGO_VERSION="5.14.0"
+for artifact in bson mongodb-driver-core mongodb-driver-sync; do
+    TASK_MONGO_TARGET="$TASK_ORACLE/$artifact.jar"
+    if [ ! -s "$TASK_MONGO_TARGET" ]; then
+        TASK_MONGO_URL="https://repo.maven.apache.org/maven2/org/mongodb/$artifact/$TASK_MONGO_VERSION/$artifact-$TASK_MONGO_VERSION.jar"
+        curl --fail --location --retry 2 "$TASK_MONGO_URL" -o "$TASK_MONGO_TARGET.download"
+        curl --fail --location --retry 2 "$TASK_MONGO_URL.sha1" -o "$TASK_MONGO_TARGET.sha1"
+        TASK_MONGO_EXPECTED="$(tr -d '[:space:]' < "$TASK_MONGO_TARGET.sha1")"
+        TASK_MONGO_ACTUAL="$(shasum -a 1 "$TASK_MONGO_TARGET.download" | cut -d ' ' -f 1)"
+        if [ "$TASK_MONGO_EXPECTED" != "$TASK_MONGO_ACTUAL" ]; then
+            echo "MongoDB $artifact checksum mismatch." >&2
+            exit 1
+        fi
+        mv "$TASK_MONGO_TARGET.download" "$TASK_MONGO_TARGET"
+    fi
+done
+TASK_MONGO_CLASSPATH="$TASK_ORACLE/classes:$TASK_ORACLE/bson.jar:$TASK_ORACLE/mongodb-driver-core.jar:$TASK_ORACLE/mongodb-driver-sync.jar"
+"$TASK_JAVA/bin/javac" -cp "$TASK_MONGO_CLASSPATH" -d "$TASK_ORACLE/classes" MongoBridge/MongoShellQuery.java MongoBridge/MongoBridge.java
+"$TASK_JAVA/bin/java" -cp "$TASK_MONGO_CLASSPATH" MongoBridge --self-test
 "$TASK_JAVA/bin/javac" -d "$TASK_ORACLE/classes" OracleBridge/OracleBridge.java
 TASK_CLASSPATH="$TASK_ORACLE/classes:$TASK_ORACLE/ojdbc11.jar:$TASK_ORACLE/orai18n.jar"
 "$TASK_JAVA/bin/java" -cp "$TASK_CLASSPATH" OracleBridge --self-test
@@ -60,6 +79,7 @@ cp "$TASK_ROOT/build/AppIcon.icns" "$TASK_APP/Contents/Resources/"
 cp "$TASK_ROOT/build/AppIconDark.icns" "$TASK_APP/Contents/Resources/"
 cp .build/release/dbdbdeep "$TASK_APP/Contents/MacOS/dbdbdeep"
 cp "$TASK_ORACLE/ojdbc11.jar" "$TASK_ORACLE/orai18n.jar" "$TASK_APP/Contents/Resources/Oracle/"
+cp "$TASK_ORACLE/bson.jar" "$TASK_ORACLE/mongodb-driver-core.jar" "$TASK_ORACLE/mongodb-driver-sync.jar" "$TASK_APP/Contents/Resources/Oracle/"
 cp -R "$TASK_ORACLE/classes" "$TASK_APP/Contents/Resources/Oracle/"
 ditto "$TASK_ORACLE/jre" "$TASK_APP/Contents/Resources/Oracle/jre"
 cat > "$TASK_APP/Contents/Info.plist" <<'PLIST'
@@ -72,8 +92,8 @@ cat > "$TASK_APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleExecutable</key><string>dbdbdeep</string>
 <key>CFBundlePackageType</key><string>APPL</string>
-<key>CFBundleShortVersionString</key><string>0.2.0</string>
-<key>CFBundleVersion</key><string>3</string>
+<key>CFBundleShortVersionString</key><string>0.3.2</string>
+<key>CFBundleVersion</key><string>6</string>
 <key>LSMinimumSystemVersion</key><string>14.0</string>
 <key>NSHighResolutionCapable</key><true/>
 <key>NSPrincipalClass</key><string>NSApplication</string>

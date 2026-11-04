@@ -14,14 +14,14 @@ struct DBDeepApp: App {
         .windowResizability(.contentMinSize)
         .commands {
             CommandGroup(replacing: .newItem) {
-                Button("New Oracle Connection…") { store.newConnection() }.keyboardShortcut("n", modifiers: .command).disabled(store.isBusy)
+                Button("New Database Connection…") { store.newConnection() }.keyboardShortcut("n", modifiers: .command).disabled(store.isBusy)
             }
             CommandMenu("Query") {
                 Button(store.selectedSQL.isEmpty ? "Run statement" : "Run selection") { Task { await store.run() } }
                     .keyboardShortcut(KeyEquivalent("\u{3}"), modifiers: .command).disabled(!store.canRunQuery)
                 Divider()
-                Button("Commit changes") { Task { await store.transaction(commit: true) } }.keyboardShortcut(.return, modifiers: [.command, .shift]).disabled(!store.isConnected || store.isBusy)
-                Button("Rollback changes") { Task { await store.transaction(commit: false) } }.disabled(!store.isConnected || store.isBusy)
+                Button("Commit changes") { Task { await store.transaction(commit: true) } }.keyboardShortcut(.return, modifiers: [.command, .shift]).disabled(!store.canUseTransactions)
+                Button("Rollback changes") { Task { await store.transaction(commit: false) } }.disabled(!store.canUseTransactions)
                 Divider()
                 Button("Export result as CSV…") { store.exportCSV() }.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(store.result?.columns.isEmpty != false)
                 Button("Refresh schema") { Task { await store.refreshSchema() } }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(!store.isConnected || store.isBusy)

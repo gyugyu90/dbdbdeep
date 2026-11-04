@@ -37,7 +37,7 @@ public enum ConnectionStage: String, Codable, Sendable {
         switch self {
         case .credentials: return "Credentials"
         case .runtime: return "Runtime"
-        case .driver: return "Oracle driver"
+        case .driver: return "Database driver"
         case .connecting: return "Connect & authenticate"
         case .session: return "Database session"
         case .verification: return "Verification query"
@@ -116,6 +116,14 @@ public struct OracleConnectionFailure: LocalizedError, Sendable, Decodable {
         }
     }
 
+    public func suggestion(for connection: DBConnection) -> String {
+        guard connection.kind == .mongodb else { return suggestion }
+        if stage == .runtime || stage == .driver { return "MongoDB 런타임을 확인해 주세요. scripts/build-app.sh로 드라이버가 포함된 앱을 다시 빌드할 수 있습니다." }
+        if errorCode == 18 || message.lowercased().contains("authenticat") { return "MongoDB 계정·비밀번호와 Authentication DB(authSource)를 확인해 주세요." }
+        if stage == .schema || errorCode == 13 { return "연결된 계정에 선택한 데이터베이스의 listCollections 권한이 있는지 확인해 주세요." }
+        return "Host·Port·Database와 TLS·SRV·Replica set 설정을 확인해 주세요. Atlas를 사용하는 경우 접속 IP 허용 목록과 DNS·VPN 상태도 확인할 수 있습니다."
+    }
+
     public func redacted(password: String) -> Self {
         Self(message: DiagnosticRedactor.redact(message, password: password),
              details: details.map { DiagnosticRedactor.redact($0, password: password) },
@@ -169,13 +177,22 @@ public struct ConnectionAttempt: Identifiable, Sendable {
             "Verification SQL: SELECT 1 FROM DUAL", "Outcome: \(outcome)",
             String(format: "Elapsed: %.3fs", elapsed), "", "Attempt log:"
         ]
+        if connection.kind == .mongodb {
+            lines = ["dbdbdeep · \(purpose)", "Started: \(ISO8601DateFormatter().string(from: startedAt))",
+                     "Connection: \(connection.name)", "MongoDB URI: \(connection.mongoURI)",
+                     "Database: \(connection.service)", "User: \(connection.username)",
+                     "Authentication DB: \(connection.effectiveMongoAuthSource)", "Driver: MongoDB Java sync",
+                     "Password: [never included]", "Timeouts: TCP 8s · server selection 10s · read 60s",
+                     "Verification: {\"ping\": 1}", "Writes: immediate; no manual commit", "Outcome: \(outcome)",
+                     String(format: "Elapsed: %.3fs", elapsed), "", "Attempt log:"]
+        }
         lines += events.map { String(format: "+%.3fs [%@] %@: %@", max(0, $0.date.timeIntervalSince(startedAt)), $0.level.rawValue, $0.stage.title, $0.message) }
         if let failure {
             lines += ["", "Original error:", failure.message]
             if let code = failure.errorCode { lines.append("Vendor code: \(code)") }
             if let state = failure.sqlState { lines.append("SQLState: \(state)") }
             lines += failure.details
-            lines += ["", "Check: \(failure.suggestion)"]
+            lines += ["", "Check: \(failure.suggestion(for: connection))"]
         }
         return lines.joined(separator: "\n")
     }

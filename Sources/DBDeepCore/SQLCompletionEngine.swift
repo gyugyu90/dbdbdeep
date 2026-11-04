@@ -1,7 +1,7 @@
 import Foundation
 
 public struct SQLCompletion: Identifiable, Equatable, Sendable {
-    public enum Kind: String, Sendable { case table, view, column }
+    public enum Kind: String, Sendable { case table, view, column, collection, method, keyword }
     public let name: String
     public let insertion: String
     public let detail: String
@@ -24,6 +24,7 @@ public struct SQLCompletionEngine: Sendable {
     }
 
     public func completions(in sql: String, atUTF16Offset offset: Int, explicit: Bool = false) -> SQLCompletionResult? {
+        if kind == .mongodb { return MongoCompletionEngine(tables: tables).completions(in: sql, atUTF16Offset: offset, explicit: explicit) }
         let source = sql as NSString
         guard offset >= 0, offset <= source.length, !tables.isEmpty else { return nil }
         let lexed = Lexer(sql)
@@ -90,6 +91,10 @@ public struct SQLCompletionEngine: Sendable {
                 }
             }
         }
+        return Self.ranked(candidates, matching: prefix, range: range)
+    }
+
+    static func ranked(_ candidates: [SQLCompletion], matching prefix: String, range: NSRange) -> SQLCompletionResult? {
         let ranked = candidates.compactMap { candidate -> (SQLCompletion, Int)? in
             guard let score = Self.score(candidate.name, matching: prefix) else { return nil }
             return (candidate, score)

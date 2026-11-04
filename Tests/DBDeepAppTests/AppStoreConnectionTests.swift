@@ -278,7 +278,7 @@ final class AppStoreConnectionTests: XCTestCase {
     }
 }
 
-private actor FakeOracleSession: OracleConnectionSession {
+private actor FakeOracleSession: DatabaseConnectionSession {
     private(set) var actions: [String] = []
     private(set) var passwords: [String] = []
     private var valid = false

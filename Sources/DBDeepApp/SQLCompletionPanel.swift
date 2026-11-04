@@ -16,7 +16,7 @@ final class SQLCompletionPanel: NSPanel {
         isOpaque = false
         backgroundColor = .clear
         hasShadow = true
-        setAccessibilityLabel("SQL suggestions")
+        setAccessibilityLabel("Schema suggestions")
     }
 
     func show(_ result: SQLCompletionResult, selected: Int, for editor: NSTextView, choose: @escaping (Int) -> Void, onDismiss: @escaping () -> Void) {
@@ -78,7 +78,7 @@ private struct SQLCompletionList: View {
                         ForEach(Array(candidates.enumerated()), id: \.element.id) { index, candidate in
                             Button { choose(index) } label: {
                                 HStack(spacing: 9) {
-                                    Image(systemName: candidate.kind == .column ? "number" : candidate.kind == .view ? "eye" : "tablecells")
+                                    Image(systemName: candidate.kind == .column ? "number" : candidate.kind == .method ? "function" : candidate.kind == .keyword ? "textformat" : candidate.kind == .view ? "eye" : "tablecells")
                                         .font(.system(size: 12)).foregroundStyle(Theme.purple).frame(width: 20)
                                     VStack(alignment: .leading, spacing: 2) {
                                         Text(candidate.insertion).font(.system(size: 12, weight: .medium, design: .monospaced)).lineLimit(1)
