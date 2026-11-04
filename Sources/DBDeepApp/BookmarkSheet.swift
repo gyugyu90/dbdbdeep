@@ -58,7 +58,7 @@ struct BookmarkSheet: View {
                 Text("Connection").font(.system(size: 11, weight: .medium))
                 Spacer()
                 if let connection = bookmarkConnection {
-                    Label(connection.name, systemImage: connection.kind == .sample ? "leaf" : "externaldrive")
+                    Label { Text(connection.name) } icon: { DatabaseIcon(kind: connection.kind, size: 13) }
                         .font(.system(size: 11, weight: .medium)).foregroundStyle(Theme.accent(connection.color))
                         .lineLimit(1).help("Saved only in this connection’s library")
                 }

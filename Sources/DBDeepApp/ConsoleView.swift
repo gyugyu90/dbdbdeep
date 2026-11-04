@@ -18,6 +18,7 @@ struct ConsoleView: View {
                 if let connection = store.connection {
                     HStack(spacing: 6) {
                         Circle().fill(store.isConnected ? Theme.green : Theme.secondary).frame(width: 5, height: 5)
+                        DatabaseIcon(kind: connection.kind, size: 12)
                         Text(connection.name).font(.system(size: 10, weight: .medium)).lineLimit(1)
                     }.padding(.horizontal, 10).padding(.vertical, 7)
                         .background(Theme.sidebar, in: Capsule())

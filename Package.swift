@@ -8,7 +8,7 @@ let package = Package(
     targets: [
         .systemLibrary(name: "CSQLite"),
         .target(name: "DBDeepCore", dependencies: ["CSQLite"]),
-        .executableTarget(name: "DBDeepApp", dependencies: ["DBDeepCore"]),
+        .executableTarget(name: "DBDeepApp", dependencies: ["DBDeepCore"], resources: [.copy("Resources/DatabaseIcons")]),
         .testTarget(name: "DBDeepCoreTests", dependencies: ["DBDeepCore"]),
         .testTarget(name: "DBDeepAppTests", dependencies: ["DBDeepApp"])
     ]

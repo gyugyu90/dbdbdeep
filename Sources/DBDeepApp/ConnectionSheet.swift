@@ -58,7 +58,7 @@ struct ConnectionSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             HStack(spacing: 12) {
-                Image(systemName: "externaldrive.badge.plus").font(.system(size: 22)).foregroundStyle(Theme.purple)
+                DatabaseIcon(kind: kind, size: 28)
                     .frame(width: 48, height: 48).background(Theme.tint("lavender"), in: RoundedRectangle(cornerRadius: 14))
                 VStack(alignment: .leading, spacing: 5) {
                     Text(connection == nil ? "Meet your database" : "A little connection care").font(.system(size: 22, weight: .semibold, design: .rounded))

@@ -65,8 +65,7 @@ struct ConnectionSidebar: View {
         let connected = store.connectedIDs.contains(connection.id)
         return Button { store.select(connection) } label: {
             HStack(spacing: 10) {
-                Image(systemName: connection.kind == .oracle ? "externaldrive" : "leaf")
-                    .font(.system(size: 14)).foregroundStyle(Theme.accent(connection.color))
+                DatabaseIcon(kind: connection.kind, size: 20)
                     .frame(width: 30, height: 32).background(Theme.tint(connection.color), in: RoundedRectangle(cornerRadius: 8))
                 VStack(alignment: .leading, spacing: 4) {
                     Text(connection.name).font(.system(size: 11, weight: .semibold)).lineLimit(1)
@@ -76,12 +75,12 @@ struct ConnectionSidebar: View {
                     }
                 }
                 Spacer(minLength: 1)
-                if selected { Image(systemName: "chevron.down").font(.system(size: 8, weight: .semibold)).foregroundStyle(Theme.purple) }
             }.padding(.horizontal, 10).padding(.vertical, 10).frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
                 .background(selected ? Theme.surface : .clear, in: RoundedRectangle(cornerRadius: 9))
                 .overlay(RoundedRectangle(cornerRadius: 9).stroke(selected ? Theme.line : .clear, lineWidth: 1))
         }.buttonStyle(.plain).disabled(store.isBusy)
+            .accessibilityAddTraits(selected ? .isSelected : [])
             .contextMenu {
                 if connection.kind != .sample {
                     Button("Connect") { Task { await store.connect(connection) } }

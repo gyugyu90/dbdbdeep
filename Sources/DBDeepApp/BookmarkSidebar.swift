@@ -15,7 +15,7 @@ struct BookmarkSidebar: View {
                 if let connection = store.connection {
                     HStack(spacing: 5) {
                         Text("FOR").font(.system(size: 8, weight: .semibold)).tracking(1)
-                        Label(connection.name, systemImage: connection.kind == .sample ? "leaf" : "externaldrive")
+                        Label { Text(connection.name) } icon: { DatabaseIcon(kind: connection.kind, size: 12) }
                             .font(.system(size: 10, weight: .medium)).lineLimit(1)
                     }.foregroundStyle(Theme.accent(connection.color)).help(connection.name)
                 } else {
