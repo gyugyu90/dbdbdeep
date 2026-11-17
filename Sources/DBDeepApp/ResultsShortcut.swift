@@ -4,6 +4,8 @@ import SwiftUI
 struct ResultsShortcut<Content: View>: NSViewRepresentable {
     let canRefresh: Bool
     let refresh: () -> Void
+    var canCopy = false
+    var copySelection: () -> Void = {}
     @ViewBuilder var content: () -> Content
 
     func makeNSView(context: Context) -> ResultsShortcutView {
@@ -12,6 +14,8 @@ struct ResultsShortcut<Content: View>: NSViewRepresentable {
         let view = ResultsShortcutView(content: host)
         view.canRefresh = canRefresh
         view.refresh = refresh
+        view.canCopy = canCopy
+        view.copySelection = copySelection
         return view
     }
 
@@ -21,6 +25,8 @@ struct ResultsShortcut<Content: View>: NSViewRepresentable {
         }
         view.canRefresh = canRefresh
         view.refresh = refresh
+        view.canCopy = canCopy
+        view.copySelection = copySelection
     }
 }
 
@@ -28,6 +34,8 @@ final class ResultsShortcutView: NSView {
     let content: NSView
     var canRefresh = false
     var refresh: () -> Void = {}
+    var canCopy = false
+    var copySelection: () -> Void = {}
     private var monitor: Any?
 
     init(content: NSView) {
@@ -66,7 +74,13 @@ final class ResultsShortcutView: NSView {
         guard let window, event.window === window else { return event }
         if event.type == .keyDown {
             let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
-            guard modifiers == .command, event.charactersIgnoringModifiers?.lowercased() == "r", hasResultsFocus else { return event }
+            guard modifiers == .command, hasResultsFocus else { return event }
+            if event.charactersIgnoringModifiers?.lowercased() == "c" {
+                guard canCopy, !(window.firstResponder is NSText) else { return event }
+                if !event.isARepeat { copySelection() }
+                return nil
+            }
+            guard event.charactersIgnoringModifiers?.lowercased() == "r" else { return event }
             if canRefresh && !event.isARepeat {
                 window.makeFirstResponder(self)
                 refresh()

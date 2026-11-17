@@ -120,6 +120,26 @@ final class ResultsRefreshTests: XCTestCase {
         XCTAssertEqual(refreshed, 2)
     }
 
+    func testCopyShortcutUsesGridSelectionButLeavesTextEditorsCopyAlone() {
+        let (window, scope, editor, child) = makeShortcutWindow()
+        defer { window.contentView = nil }
+        var copies = 0
+        scope.canCopy = true
+        scope.copySelection = { copies += 1 }
+        window.makeFirstResponder(editor)
+        XCTAssertNotNil(scope.handle(key(window, character: "c")))
+        window.makeFirstResponder(child)
+        XCTAssertNotNil(scope.handle(key(window, character: "c")))
+        XCTAssertEqual(copies, 0)
+        window.makeFirstResponder(scope)
+        XCTAssertNil(scope.handle(key(window, character: "c")))
+        XCTAssertEqual(copies, 1)
+        XCTAssertNotNil(scope.handle(key(window, character: "c", modifiers: [.command, .shift])))
+        scope.canCopy = false
+        XCTAssertNotNil(scope.handle(key(window, character: "c")))
+        XCTAssertEqual(copies, 1)
+    }
+
     func testResultsClickMovesFocusWithoutConsumingMouseEventOrOtherWindowsKeys() throws {
         let (window, scope, editor, _) = makeShortcutWindow()
         defer { window.contentView = nil }

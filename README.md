@@ -83,6 +83,7 @@ Autocomplete suggests collections after `db.` or inside `getCollection("…")`, 
 - Oracle and SQLite changes use **manual commit**. Press `⌘⇧↵` to commit, or choose **Query → Rollback changes** to undo uncommitted changes. Oracle DDL follows its [implicit commit rules](https://docs.oracle.com/en/database/oracle/oracle-database/19/sqlrf/COMMIT.html).
 - Results show up to 1,000 rows. Filter the fetched rows, double-click a value to copy it, or press `⌘⇧E` to export them as CSV. Export includes all fetched rows, regardless of the filter; long Oracle text values are previews.
 - Click a column name to toggle ascending/descending sorting for that column. Drag its right edge to resize it, or its left handle to reorder columns. These adjustments apply to fetched results and reset with each new result; CSV export keeps the original query order.
+- Drag across grid cells to select a purple rectangle; the grid scrolls at the edges while dragging. Press `⌘C` to copy the selection as TSV, or right-click and choose **Copy selection as CSV**. Only selected values are copied, in the displayed row and column order, with no headers; nulls become empty fields. Sorting, filtering, moving columns, or refreshing results clears the selection.
 - Open **History** to reload a recent query without running it.
 - With focus inside **Results**, press `⌘R` or click its refresh button to rerun the query that produced that result. Editing the console or moving its cursor does not change the refresh target. `⌘⇧R` still refreshes the schema.
 

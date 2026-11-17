@@ -6,17 +6,18 @@ struct ResultsView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var filter = ""
     @State private var copiedCell: CopiedCell?
-    @State private var selection: GridSelection?
+    @State private var selection: ResultGridSelection?
+    @State private var dragAnchor: ResultGridSelection.Cell?
+    @State private var copiedSelection: UUID?
+    @State private var dragScroller = ResultGridDragScroller()
+    @GestureState private var isSelectingCells = false
     @State private var grid = ResultGridState()
     @State private var columnDrag: ColumnDrag?
     @AppStorage("documentResultsPresentation") private var documentPresentation = "tree"
 
     private var showsTree: Bool { store.result?.documents != nil && documentPresentation == "tree" }
 
-    private struct GridSelection {
-        let row: Int
-        let column: Int?
-    }
+    private var canCopySelection: Bool { !showsTree && !store.isBusy && store.result != nil && selection != nil }
 
     private struct ColumnDrag {
         let source: Int
@@ -35,7 +36,8 @@ struct ResultsView: View {
     }
 
     var body: some View {
-        ResultsShortcut(canRefresh: store.canRefreshResults, refresh: { Task { await store.refreshResults() } }) {
+        ResultsShortcut(canRefresh: store.canRefreshResults, refresh: { Task { await store.refreshResults() } },
+                        canCopy: canCopySelection, copySelection: { copySelection(as: .tsv) }) {
             resultsContent.environmentObject(store)
         }
     }
@@ -86,8 +88,12 @@ struct ResultsView: View {
                 HStack(spacing: 5) {
                     Image(systemName: "checkmark.circle.fill").foregroundStyle(Theme.green)
                     Text("\(displayedRows.count) \(result.documents != nil ? (displayedRows.count == 1 ? "document" : "documents") : (displayedRows.count == 1 ? "row" : "rows")) displayed")
+                    if !showsTree, let selection {
+                        Text("· \(selection.rowRange.count) × \(selection.columnRange.count) selected")
+                        if copiedSelection != nil { Label("Copied", systemImage: "checkmark.circle.fill").foregroundStyle(Theme.green) }
+                    }
                     Spacer()
-                    Text(showsTree ? "Select a value to inspect or copy" : "Double-click a value to copy").foregroundStyle(Theme.secondary)
+                    Text(showsTree ? "Select a value to inspect or copy" : "Drag to select · ⌘C to copy").foregroundStyle(Theme.secondary)
                 }.font(.system(size: 9)).padding(.horizontal, 17).frame(height: 31)
             } else {
                 Spacer()
@@ -106,12 +112,20 @@ struct ResultsView: View {
                 if store.isRunningQuery { QueryLoadingOverlay(status: store.status) }
             }
             .onChange(of: store.result?.id, initial: true) { _, _ in
-                filter = ""; copiedCell = nil; selection = nil
+                filter = ""; clearSelection()
                 columnDrag = nil
                 grid.reset(for: store.result)
             }
-            .onChange(of: filter) { _, _ in copiedCell = nil; selection = nil }
-            .onChange(of: store.isRunningQuery) { _, running in if running { copiedCell = nil; columnDrag = nil } }
+            .onChange(of: filter) { _, _ in clearSelection() }
+            .onChange(of: documentPresentation) { _, _ in clearSelection() }
+            .onChange(of: store.isRunningQuery) { _, running in if running { dragScroller.stop(); dragAnchor = nil; copiedCell = nil; columnDrag = nil } }
+            .onDisappear { dragScroller.stop() }
+            .onChange(of: isSelectingCells) { _, active in if !active { dragScroller.stop(); dragAnchor = nil } }
+            .task(id: copiedSelection) {
+                guard copiedSelection != nil else { return }
+                do { try await Task.sleep(for: .seconds(1.3)) } catch { return }
+                copiedSelection = nil
+            }
             .task(id: copiedCell) {
                 guard copiedCell != nil else { return }
                 do { try await Task.sleep(for: .seconds(1.3)) } catch { return }
@@ -132,6 +146,7 @@ struct ResultsView: View {
     private func resultTable(_ result: QueryResult) -> some View {
         let rows = displayedRows
         let columns = grid.columns(in: result)
+        let layout = ResultGridLayout(columnWidths: columns.map { width($0, result: result) }, rowCount: rows.count)
         return GeometryReader { geometry in
             let content = NSSize(width: 38 + columns.reduce(CGFloat.zero) { $0 + width($1, result: result) }, height: 34 + CGFloat(rows.count) * 36)
             let viewport = ScrollbarController.viewportSize(content: content, in: geometry.size)
@@ -141,19 +156,21 @@ struct ResultsView: View {
                     ForEach(Array(rows.enumerated()), id: \.element.offset) { position, row in
                         HStack(spacing: 0) {
                             Text("\(position + 1)").font(.system(size: 10, design: .monospaced)).foregroundStyle(Theme.secondary.opacity(0.7)).frame(width: 38, height: 36)
-                            ForEach(columns, id: \.self) { index in
-                                valueCell(row.element.indices.contains(index) ? row.element[index] : nil, column: result.columns[index], row: row.offset, index: index)
+                                .contentShape(Rectangle()).onTapGesture {
+                                    guard !columns.isEmpty else { return }
+                                    setSelection(.init(anchor: .init(row: position, column: 0), extent: .init(row: position, column: columns.count - 1)))
+                                }
+                            ForEach(Array(columns.enumerated()), id: \.element) { columnPosition, index in
+                                valueCell(row.element.indices.contains(index) ? row.element[index] : nil, column: result.columns[index], row: row.offset, index: index,
+                                          position: .init(row: position, column: columnPosition), layout: layout)
                                     .frame(width: width(index, result: result), height: 36, alignment: .leading)
                                     .overlay(alignment: .trailing) { Theme.line.opacity(0.6).frame(width: 1) }
                             }
                         }.frame(minWidth: viewport.width, alignment: .leading)
-                            .background(selection?.row == row.offset ? Theme.selectedRow : position.isMultiple(of: 2) ? Theme.surface : Theme.canvas)
+                            .background(selection?.rowRange.contains(position) == true ? Theme.selectedRow : position.isMultiple(of: 2) ? Theme.surface : Theme.canvas)
                             .overlay(alignment: .bottom) { Theme.line.opacity(0.75).frame(height: 1) }
                             .contentShape(Rectangle())
-                            .simultaneousGesture(TapGesture().onEnded {
-                                if selection?.row != row.offset { selection = GridSelection(row: row.offset, column: nil) }
-                            })
-                            .accessibilityAddTraits(selection?.row == row.offset ? .isSelected : [])
+                            .accessibilityAddTraits(selection?.rowRange.contains(position) == true ? .isSelected : [])
                     }
                 } header: {
                     HStack(spacing: 0) {
@@ -163,10 +180,10 @@ struct ResultsView: View {
                                 sortDirection: grid.sortColumn == index ? grid.sortDirection : nil,
                                 isDragging: columnDrag?.source == index,
                                 dropAfter: columnDrag?.target == index && columnDrag?.source != index ? columnDrag?.after : nil,
-                                onSort: { copiedCell = nil; grid.toggleSort(column: index) },
+                                onSort: { clearSelection(); grid.toggleSort(column: index) },
                                 onResize: { grid.resize(column: index, width: Double($0)) },
                                 onDragChanged: { location in
-                                    copiedCell = nil
+                                    clearSelection()
                                     if let target = columnDropTarget(at: location, result: result) {
                                         columnDrag = ColumnDrag(source: index, target: target.column, after: target.after)
                                     }
@@ -181,9 +198,50 @@ struct ResultsView: View {
                     }.coordinateSpace(name: "resultColumns")
                         .background(Theme.sidebar).overlay(alignment: .bottom) { Theme.line.frame(height: 1) }
                 }
-                }.frame(minWidth: viewport.width, minHeight: viewport.height, alignment: .topLeading).themedScrollbars()
+                }.frame(minWidth: viewport.width, minHeight: viewport.height, alignment: .topLeading)
+                    .coordinateSpace(name: "resultCells").themedScrollbars()
+                    .background(alignment: .topLeading) { ResultGridScrollProbe(controller: dragScroller).frame(width: 0, height: 0) }
+            }
+            .contextMenu {
+                Button("Copy selection as TSV") { copySelection(as: .tsv) }.disabled(!canCopySelection)
+                Button("Copy selection as CSV") { copySelection(as: .csv) }.disabled(!canCopySelection)
             }
         }
+    }
+
+    private func setSelection(_ value: ResultGridSelection) {
+        guard selection != value else { return }
+        copiedSelection = nil; copiedCell = nil
+        selection = value
+    }
+
+    private func clearSelection() {
+        dragScroller.stop()
+        selection = nil; dragAnchor = nil; copiedCell = nil; copiedSelection = nil
+    }
+
+    private func copySelection(as format: ResultSelectionFormat) {
+        guard canCopySelection, let result = store.result, let selection,
+              let text = selection.text(in: result, rowOrder: displayedRows.map(\.offset), columnOrder: grid.columns(in: result), format: format),
+              ResultSelectionClipboard.write(text, format: format) else { return }
+        copiedSelection = UUID()
+    }
+
+    private func selectionDrag(from cell: ResultGridSelection.Cell, layout: ResultGridLayout) -> some Gesture {
+        DragGesture(minimumDistance: 3, coordinateSpace: .named("resultCells"))
+            .updating($isSelectingCells) { _, active, _ in active = true }
+            .onChanged { value in
+                if dragAnchor == nil { dragAnchor = cell }
+                if let anchor = dragAnchor, let extent = layout.cell(at: value.location) {
+                    setSelection(.init(anchor: anchor, extent: extent))
+                }
+                dragScroller.track { point in
+                    if let anchor = dragAnchor, let extent = layout.cell(at: point) {
+                        setSelection(.init(anchor: anchor, extent: extent))
+                    }
+                }
+            }
+            .onEnded { _ in dragScroller.stop(); dragAnchor = nil }
     }
 
     private func columnDropTarget(at location: CGFloat, result: QueryResult) -> (column: Int, after: Bool)? {
@@ -197,7 +255,8 @@ struct ResultsView: View {
         return columns.last.map { ($0, true) }
     }
 
-    private func valueCell(_ value: String?, column: String, row: Int, index: Int) -> some View {
+    private func valueCell(_ value: String?, column: String, row: Int, index: Int,
+                           position: ResultGridSelection.Cell, layout: ResultGridLayout) -> some View {
         Group {
             if let value {
                 if column.lowercased() == "status" {
@@ -214,27 +273,18 @@ struct ResultsView: View {
                 }
             } else { Text("NULL").font(.system(size: 10, design: .monospaced)).italic().foregroundStyle(Theme.secondary.opacity(0.65)) }
         }.lineLimit(1).padding(.horizontal, 12).frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
-            .background {
-                if selection?.row == row, selection?.column == index {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(Theme.selectedCell.shadow(.inner(color: .black.opacity(0.18), radius: 2, x: 1, y: 2)))
-                        .overlay {
-                            RoundedRectangle(cornerRadius: 3).strokeBorder(
-                                LinearGradient(colors: [Theme.purple.opacity(0.6), Theme.cellInsetHighlight], startPoint: .topLeading, endPoint: .bottomTrailing),
-                                lineWidth: 1)
-                        }
-                        .padding(2).allowsHitTesting(false)
-                }
-            }
+            .background(selection?.contains(position) == true ? Theme.selectedCell : .clear)
             .contentShape(Rectangle()).onTapGesture(count: 2) {
-                selection = GridSelection(row: row, column: index)
+                setSelection(.init(anchor: position, extent: position))
                 NSPasteboard.general.clearContents()
                 guard NSPasteboard.general.setString(value ?? "NULL", forType: .string) else { return }
                 withAnimation(reduceMotion ? nil : .easeOut(duration: 0.15)) {
                     copiedCell = CopiedCell(row: row, column: index)
                 }
             }
-            .simultaneousGesture(TapGesture().onEnded { selection = GridSelection(row: row, column: index) })
+            .simultaneousGesture(TapGesture().onEnded { setSelection(.init(anchor: position, extent: position)) })
+            .simultaneousGesture(selectionDrag(from: position, layout: layout))
+            .accessibilityAddTraits(selection?.contains(position) == true ? .isSelected : [])
             .overlay(alignment: .trailing) {
                 if copiedCell?.row == row, copiedCell?.column == index {
                     HStack(spacing: 3) {
