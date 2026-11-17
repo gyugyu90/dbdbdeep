@@ -257,6 +257,21 @@ final class AppStoreConnectionTests: XCTestCase {
         XCTAssertFalse(store.isRunningQuery)
     }
 
+    func testResultsRefreshReconnectsExpiredSessionAndKeepsOriginalSQL() async throws {
+        let expired = FakeOracleSession()
+        let replacement = FakeOracleSession()
+        let store = try makeStore([expired, replacement])
+        store.query = "SELECT 'original' FROM dual;"
+        await store.run()
+        await expired.expire()
+        store.query = "DELETE FROM should_not_run;"
+        await store.refreshResults()
+        let actions = await replacement.actions
+        XCTAssertEqual(actions, ["connect", "schema", "execute:SELECT 'original' FROM dual;", "schema"])
+        XCTAssertNil(store.error)
+        XCTAssertEqual(store.query, "DELETE FROM should_not_run;")
+    }
+
     private func makeStore(_ sessions: [FakeOracleSession], missingPassword: Bool = false) throws -> AppStore {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)

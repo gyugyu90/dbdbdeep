@@ -35,6 +35,12 @@ struct ResultsView: View {
     }
 
     var body: some View {
+        ResultsShortcut(canRefresh: store.canRefreshResults, refresh: { Task { await store.refreshResults() } }) {
+            resultsContent.environmentObject(store)
+        }
+    }
+
+    private var resultsContent: some View {
         VStack(spacing: 0) {
             HStack(spacing: 8) {
                 Image(systemName: showsTree ? "list.bullet.indent" : "tablecells").font(.system(size: 11)).foregroundStyle(Theme.purple)
@@ -53,6 +59,7 @@ struct ResultsView: View {
                 }
                 if let result = store.result {
                     Label(String(format: "%.0f ms", result.elapsed * 1000), systemImage: "clock").font(.system(size: 9)).foregroundStyle(Theme.secondary)
+                    IconButton(icon: "arrow.clockwise", help: "Refresh this result · ⌘R") { Task { await store.refreshResults() } }.disabled(!store.canRefreshResults)
                     IconButton(icon: "square.and.arrow.up", help: "Export all fetched rows as CSV") { store.exportCSV() }.disabled(result.columns.isEmpty)
                 }
             }.padding(.horizontal, 17).frame(height: 43)

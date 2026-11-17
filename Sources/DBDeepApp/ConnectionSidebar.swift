@@ -102,7 +102,7 @@ struct ConnectionSidebar: View {
                     if expanded { store.expandedTables.remove(table.name) } else { store.expandedTables.insert(table.name) }
                 } label: { Image(systemName: expanded ? "chevron.down" : "chevron.right").font(.system(size: 8, weight: .semibold)).frame(width: 13, height: 28).contentShape(Rectangle()) }
                     .buttonStyle(.plain).foregroundStyle(Theme.secondary)
-                Button { store.browse(table) } label: {
+                Button { Task { await store.browse(table) } } label: {
                     HStack(spacing: 7) {
                         Image(systemName: table.isView ? "eye" : "tablecells").font(.system(size: 11)).foregroundStyle(Theme.purple.opacity(0.8))
                         Text(table.name).font(.system(size: 11)).lineLimit(1)
@@ -112,13 +112,7 @@ struct ConnectionSidebar: View {
             }.padding(.horizontal, 10)
             if expanded {
                 ForEach(table.columns) { column in
-                    HStack(spacing: 7) {
-                        Image(systemName: column.primaryKey ? "key.horizontal" : "number").font(.system(size: 9)).foregroundStyle(column.primaryKey ? Theme.accent("yellow") : Theme.secondary.opacity(0.7)).frame(width: 12)
-                        Text(column.name).font(.system(size: 10)).lineLimit(1)
-                        Spacer(minLength: 3)
-                        Text(column.type.lowercased()).font(.system(size: 8, design: .monospaced)).foregroundStyle(Theme.secondary).lineLimit(1)
-                    }.padding(.leading, 39).padding(.trailing, 12).frame(height: 26)
-                        .help("\(column.name) · \(column.type) · \(column.nullable ? "nullable" : "not null")")
+                    SchemaColumnRow(column: column)
                 }
             }
         }

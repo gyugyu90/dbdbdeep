@@ -30,9 +30,8 @@ struct WorkspaceView: View {
             }
         }
         .sheet(isPresented: $store.showBookmark) { BookmarkSheet(bookmark: store.editingBookmark) }
-        .onChange(of: store.query) { _, _ in store.queryChanged() }
         .task { await store.start() }
-        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in store.persist() }
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in store.persist(waitForDrafts: true) }
     }
 
     private var titlebar: some View {

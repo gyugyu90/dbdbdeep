@@ -163,8 +163,9 @@ public actor OracleDatabase {
         let tables = try schemaQuery("SELECT table_name, 'TABLE' AS object_type FROM user_tables UNION ALL SELECT view_name, 'VIEW' FROM user_views ORDER BY 1")
         let columns = try schemaQuery("""
         SELECT c.table_name, c.column_name, c.data_type,
-               CASE WHEN p.column_name IS NOT NULL THEN 'Y' ELSE 'N' END AS is_pk, c.nullable
+               CASE WHEN p.column_name IS NOT NULL THEN 'Y' ELSE 'N' END AS is_pk, c.nullable, m.comments
         FROM user_tab_columns c
+        LEFT JOIN user_col_comments m ON c.table_name = m.table_name AND c.column_name = m.column_name
         LEFT JOIN (
             SELECT cc.table_name, cc.column_name
             FROM user_cons_columns cc JOIN user_constraints k ON cc.constraint_name = k.constraint_name
@@ -172,11 +173,15 @@ public actor OracleDatabase {
         ) p ON c.table_name = p.table_name AND c.column_name = p.column_name
         ORDER BY c.table_name, c.column_id
         """)
+        return Self.makeSchema(tables: tables, columns: columns)
+    }
+
+    static func makeSchema(tables: QueryResult, columns: QueryResult) -> [SchemaTable] {
         return tables.rows.compactMap { row in
-            guard let name = row[0] else { return nil }
-            return SchemaTable(name: name, isView: row[1] == "VIEW", columns: columns.rows.filter { $0[0] == name }.compactMap { column in
+            guard row.count >= 2, let name = row[0] else { return nil }
+            return SchemaTable(name: name, isView: row[1] == "VIEW", columns: columns.rows.filter { $0.count >= 6 && $0[0] == name }.compactMap { column in
                 guard let columnName = column[1] else { return nil }
-                return SchemaColumn(name: columnName, type: column[2] ?? "", primaryKey: column[3] == "Y", nullable: column[4] == "Y")
+                return SchemaColumn(name: columnName, type: column[2] ?? "", primaryKey: column[3] == "Y", nullable: column[4] == "Y", comment: column[5])
             })
         }
     }

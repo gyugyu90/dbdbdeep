@@ -78,8 +78,10 @@ public struct SchemaColumn: Identifiable, Equatable, Sendable {
     public let type: String
     public let primaryKey: Bool
     public let nullable: Bool
-    public init(name: String, type: String, primaryKey: Bool = false, nullable: Bool = true) {
+    public let comment: String?
+    public init(name: String, type: String, primaryKey: Bool = false, nullable: Bool = true, comment: String? = nil) {
         self.name = name; self.type = type; self.primaryKey = primaryKey; self.nullable = nullable
+        self.comment = comment
     }
 }
 
@@ -134,8 +136,10 @@ public struct WorkspaceState: Codable {
     public var connections: [DBConnection]
     public var bookmarks: [QueryBookmark]
     public var drafts: [String: String]
+    public var draftUpdatedAt: [String: Date]?
     public var selectedConnection: UUID?
-    public init(connections: [DBConnection], bookmarks: [QueryBookmark], drafts: [String: String] = [:], selectedConnection: UUID? = nil) {
+    public init(connections: [DBConnection], bookmarks: [QueryBookmark], drafts: [String: String] = [:], selectedConnection: UUID? = nil, draftUpdatedAt: [String: Date]? = nil) {
         self.connections = connections; self.bookmarks = bookmarks; self.drafts = drafts; self.selectedConnection = selectedConnection
+        self.draftUpdatedAt = draftUpdatedAt
     }
 }

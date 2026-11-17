@@ -8,7 +8,10 @@ final class AppStore: ObservableObject {
     @Published var bookmarks: [QueryBookmark] = []
     @Published var selectedID: UUID?
     @Published var query = "" {
-        didSet { cachedStatements = nil; cachedLineCount = nil; cachedCursorTarget = nil; cachedBookmarkKey = nil }
+        didSet {
+            cachedStatements = nil; cachedLineCount = nil; cachedCursorTarget = nil; cachedBookmarkKey = nil
+            if query != oldValue { queryChanged() }
+        }
     }
     @Published var selectedSQL = ""
     @Published var cursorLocation = 0 {
@@ -41,12 +44,17 @@ final class AppStore: ObservableObject {
 
     var directory: URL { workspaceFiles.directory }
     private let workspaceFiles: WorkspaceFileStore
+    private let consoleFiles: ConsoleDraftFileStore
+    private let consoleQueue = DispatchQueue(label: "studio.dbdbdeep.console-autosave", qos: .utility)
+    private var consoleDrafts: [String: ConsoleDraft] = [:]
+    private var consoleLoadError: String?
     private let sessions: DatabaseSessions
     private let readPassword: (UUID) throws -> String
     private var workspaceLoadError: String?
     private var drafts: [String: String] = [:]
     private var persistWork: DispatchWorkItem?
     private var schemaByConnection: [UUID: [SchemaTable]] = [:]
+    private var resultQueries: [UUID: (resultID: UUID, sql: String)] = [:]
     private var cachedStatements: [SQLStatement]?
     private var cachedLineCount: Int?
     private struct Cached<Value> { let value: Value }
@@ -57,6 +65,10 @@ final class AppStore: ObservableObject {
     var canUseTransactions: Bool { connection?.supportsTransactions == true && isConnected && !isBusy }
     var connection: DBConnection? { connections.first { $0.id == selectedID } }
     var result: QueryResult? { selectedID.flatMap { results[$0] } }
+    var canRefreshResults: Bool {
+        guard !isBusy, let connection, let result, let source = resultQueries[connection.id] else { return false }
+        return source.resultID == result.id
+    }
     var isConnected: Bool { selectedID.map { connectedIDs.contains($0) } ?? false }
     var queryLineCount: Int {
         if let cachedLineCount { return cachedLineCount }
@@ -108,17 +120,40 @@ final class AppStore: ObservableObject {
         self.readPassword = readPassword
         let workspaceDirectory = directory ?? WorkspaceDefaults.directory
         workspaceFiles = WorkspaceFileStore(directory: workspaceDirectory)
+        consoleFiles = ConsoleDraftFileStore(directory: workspaceDirectory)
         sessions = DatabaseSessions(directory: workspaceDirectory, runtime: DatabaseSessions.bundledRuntime, makeOracleSession: makeOracleSession, makeMongoSession: makeMongoSession)
+        do {
+            let saved = try consoleFiles.load()
+            consoleDrafts = saved.drafts
+            if saved.recoveredFromBackup { status = "Console restored from an autosave backup" }
+        } catch {
+            consoleLoadError = "콘솔 자동 저장 파일을 읽지 못했습니다. 원본은 보존됩니다: \(error.localizedDescription)"
+            self.error = consoleLoadError
+        }
         do {
             let state = try workspaceFiles.load() ?? WorkspaceDefaults.makeWorkspace()
             connections = state.connections; bookmarks = state.bookmarks; drafts = state.drafts
+            for connection in connections {
+                let id = connection.id.uuidString
+                guard let saved = consoleDrafts[id] else { continue }
+                if let date = state.draftUpdatedAt?[id], date > saved.updatedAt, let text = drafts[id] {
+                    consoleDrafts[id] = ConsoleDraft(connectionName: connection.name, query: text, updatedAt: date)
+                } else { drafts[id] = saved.query }
+            }
             selectedID = state.selectedConnection ?? connections.first?.id
             query = selectedID.flatMap { drafts[$0.uuidString] } ?? defaultQuery
+            if consoleLoadError == nil {
+                updateConsoleDrafts()
+                do { try consoleFiles.save(consoleDrafts) }
+                catch { self.error = "콘솔 자동 저장 실패: \(error.localizedDescription)" }
+            }
         } catch {
             workspaceLoadError = "작업 공간을 읽을 수 없습니다. 원본 설정 파일을 보호하기 위해 저장을 중단했습니다: \(error.localizedDescription)"
             self.error = workspaceLoadError
         }
     }
+
+    deinit { consoleQueue.sync {} }
 
     static let sampleQuery = WorkspaceDefaults.sampleQuery
     var defaultQuery: String { WorkspaceDefaults.query(for: connection?.kind) }
@@ -250,10 +285,12 @@ final class AppStore: ObservableObject {
 
     func removeConnection(_ target: DBConnection) async {
         guard !isBusy, target.kind != .sample else { return }
+        persist()
         await sessions.disconnect(target)
         PasswordKeychain.delete(for: target.id)
         connections.removeAll { $0.id == target.id }
         connectedIDs.remove(target.id); results.removeValue(forKey: target.id)
+        resultQueries.removeValue(forKey: target.id)
         schemaByConnection.removeValue(forKey: target.id); drafts.removeValue(forKey: target.id.uuidString)
         if selectedID == target.id {
             selectedID = nil
@@ -288,6 +325,11 @@ final class AppStore: ObservableObject {
         await execute(sql, on: connection)
     }
 
+    func refreshResults() async {
+        guard canRefreshResults, let connection, let source = resultQueries[connection.id] else { return }
+        await execute(source.sql, on: connection)
+    }
+
     private func execute(_ sql: String, on connection: DBConnection) async {
         isBusy = true; isRunningQuery = true; error = nil
         defer { isRunningQuery = false; isBusy = false }
@@ -296,6 +338,7 @@ final class AppStore: ObservableObject {
         do {
             let output = try await sessions.execute(sql, on: connection)
             results[connection.id] = output
+            resultQueries[connection.id] = (output.id, sql)
             history.insert((sql, Date()), at: 0)
             history = Array(history.prefix(50))
             status = output.message
@@ -332,6 +375,7 @@ final class AppStore: ObservableObject {
     private func invalidateSession(_ target: DBConnection) async {
         connectedIDs.remove(target.id)
         results.removeValue(forKey: target.id)
+        resultQueries.removeValue(forKey: target.id)
         schemaByConnection.removeValue(forKey: target.id)
         if selectedID == target.id { tables = [] }
         await sessions.disconnect(target)
@@ -345,17 +389,24 @@ final class AppStore: ObservableObject {
             try await sessions.transaction(on: connection, commit: commit)
             status = commit ? "Changes committed ✓" : "Changes rolled back ↶"
             results.removeValue(forKey: connection.id)
+            resultQueries.removeValue(forKey: connection.id)
             try await loadSchema(connection)
         } catch { self.error = error.localizedDescription }
     }
 
-    func browse(_ table: SchemaTable) {
-        query = connection?.kind == .mongodb ? QueryLanguage.browseCollection(table.name) : connection?.kind == .oracle
+    func browse(_ table: SchemaTable) async {
+        guard !isBusy, let connection else { return }
+        let preview = connection.kind == .mongodb ? QueryLanguage.browseCollection(table.name) : connection.kind == .oracle
             ? "SELECT *\nFROM \(SQLIdentifier.quote(table.name))\nFETCH FIRST 100 ROWS ONLY;"
             : "SELECT *\nFROM \(SQLIdentifier.quote(table.name))\nLIMIT 100;"
-        selectedSQL = ""
-        cursorLocation = 0
-        Task { await run() }
+        if let target = try? SavedQueryFocus.resolve(bookmarkSQL: preview, in: query, cursor: cursorLocation, kind: connection.kind),
+           SQLLineIndex(target.sql).count <= SQLLineIndex.maximumLines {
+            query = target.sql
+            selectedSQL = ""; cursorLocation = target.range.location
+            editorFocusRequest = SQLEditorFocus(range: target.range)
+        }
+        persist()
+        await execute(preview, on: connection)
     }
 
     func canRunBookmark(_ bookmark: QueryBookmark) -> Bool {
@@ -437,16 +488,47 @@ final class AppStore: ObservableObject {
     }
 
     func queryChanged() {
+        if let selectedID { drafts[selectedID.uuidString] = query }
         persistWork?.cancel()
         let work = DispatchWorkItem { [weak self] in self?.persist() }
         persistWork = work
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.5, execute: work)
     }
 
-    func persist() {
-        guard workspaceLoadError == nil else { error = workspaceLoadError; return }
+    private func updateConsoleDrafts() {
         if let selectedID { drafts[selectedID.uuidString] = query }
-        let state = WorkspaceState(connections: connections, bookmarks: bookmarks, drafts: drafts, selectedConnection: selectedID)
+        for connection in connections {
+            let id = connection.id.uuidString
+            guard let text = drafts[id] else { continue }
+            if consoleDrafts[id]?.query != text || consoleDrafts[id]?.connectionName != connection.name {
+                consoleDrafts[id] = ConsoleDraft(connectionName: connection.name, query: text)
+            }
+        }
+    }
+
+    func persist(waitForDrafts: Bool = false) {
+        guard workspaceLoadError == nil else { error = workspaceLoadError; return }
+        persistWork?.cancel()
+        updateConsoleDrafts()
+        if let consoleLoadError { error = consoleLoadError }
+        else {
+            let files = consoleFiles
+            let snapshot = consoleDrafts
+            if waitForDrafts {
+                do { try consoleQueue.sync { try files.save(snapshot) } }
+                catch { self.error = "콘솔 자동 저장 실패: \(error.localizedDescription)" }
+            } else {
+                consoleQueue.async { [weak self] in
+                    do { try files.save(snapshot) }
+                    catch {
+                        let message = "콘솔 자동 저장 실패: \(error.localizedDescription)"
+                        Task { @MainActor [weak self] in self?.error = message }
+                    }
+                }
+            }
+        }
+        let dates = consoleDrafts.filter { drafts[$0.key] != nil }.mapValues(\.updatedAt)
+        let state = WorkspaceState(connections: connections, bookmarks: bookmarks, drafts: drafts, selectedConnection: selectedID, draftUpdatedAt: dates)
         do { try workspaceFiles.save(state) }
         catch { self.error = "저장 실패: \(error.localizedDescription)" }
     }

@@ -36,6 +36,10 @@ open build/dbdbdeep.app
 
 Your tables, views, and columns appear in the left sidebar. Click a table to preview up to 100 rows. Right-click a connection to edit, remove, or reconnect. Running a query opens a saved connection automatically when needed, including after an idle session expires.
 
+Expand an Oracle table or view to see its columns. Column comments appear below each name in smaller text; hover over a column to read the full comment. Use **Refresh schema** after changing comments in the database.
+
+Table and collection previews keep your console text. The preview query is appended or focused if it already exists, and only that query runs. If the console has an unfinished statement or no room within the line limit, the preview runs without changing the editor.
+
 Passwords stay in macOS Keychain. Click the info icon beside **Password** for details.
 
 If connecting fails, **Connection details** shows the attempted settings, progress, and error details. You can copy the report without including your password. For character-set errors such as ORA-17056, enable **Bundled orai18n.jar** under **Driver libraries**. It's on by default. Use **Add JAR…** for additional libraries; keep those files at their selected locations.
@@ -80,6 +84,7 @@ Autocomplete suggests collections after `db.` or inside `getCollection("…")`, 
 - Results show up to 1,000 rows. Filter the fetched rows, double-click a value to copy it, or press `⌘⇧E` to export them as CSV. Export includes all fetched rows, regardless of the filter; long Oracle text values are previews.
 - Click a column name to toggle ascending/descending sorting for that column. Drag its right edge to resize it, or its left handle to reorder columns. These adjustments apply to fetched results and reset with each new result; CSV export keeps the original query order.
 - Open **History** to reload a recent query without running it.
+- With focus inside **Results**, press `⌘R` or click its refresh button to rerun the query that produced that result. Editing the console or moving its cursor does not change the refresh target. `⌘⇧R` still refreshes the schema.
 
 ## Save favorite queries
 
@@ -88,6 +93,8 @@ Each connection has its own library. Press `⌘D` to bookmark the statement at t
 Older bookmarks without a connection, and bookmarks from removed connections, stay under **Unassigned queries**. Select a connection and click **Move here** to add one to its library.
 
 Connections, bookmarks, and query drafts are saved locally. History and results last for the current app session.
+
+Console text also autosaves separately after a brief pause in typing, and reopens for each connection. Safety copies live in `~/Library/Application Support/DBDeep/ConsoleDrafts/`: `current.json`, `previous.json`, and up to 20 checkpoints in `History`. Checkpoints are kept about every five minutes of saved edits and before clearing a console. If the current file is damaged, the app tries the previous copy and checkpoints. Removing a connection keeps its console safety copy.
 
 ## Make it yours
 
