@@ -2,7 +2,7 @@
 
 A cheerful macOS app for exploring Oracle and MongoDB databases, running queries, and keeping your favorite queries close. Includes a local SQLite playground to try things out without a server.
 
-**Version 0.3.2**
+**Version 0.3.3**
 
 ## Get started
 
@@ -44,7 +44,7 @@ Passwords stay in macOS Keychain. Click the info icon beside **Password** for de
 
 If connecting fails, **Connection details** shows the attempted settings, progress, and error details. You can copy the report without including your password. For character-set errors such as ORA-17056, enable **Bundled orai18n.jar** under **Driver libraries**. It's on by default. Use **Add JAR…** for additional libraries; keep those files at their selected locations.
 
-## Connect to MongoDB (latest source build)
+## Connect to MongoDB
 
 1. Click **Add connection** and select **MongoDB**.
 2. Paste your connection string into **Connection URI** and click **Import URI**, or enter the hosts, default port (`27017`), and database manually. Multiple hosts can be separated by commas, with a separate `:port` for each host. The URI importer supports `authSource`, `tls`/`ssl`, and `replicaSet`; unsupported options are reported.
@@ -77,6 +77,8 @@ Autocomplete suggests collections after `db.` or inside `getCollection("…")`, 
 ## Run queries
 
 - The query console supports up to 100,000 lines. Longer input is truncated with a warning.
+- Press `⌘F` or click the console's magnifying glass to search; `⌘G` / `⇧⌘G` move to the next / previous match, and `Esc` closes search. Shortcuts work with Korean input enabled too.
+- Use `⌘/` or `⌘-` to toggle `-- ` comments on selected lines, and `Tab` / `Shift-Tab` to indent / outdent them by four spaces.
 - Place the cursor in a SQL statement and click **Run statement** or press `⌘↵` (Return or keypad Enter) to run just that statement. In the whitespace between statements or after the final query, both Run statement and bookmarking target the nearest statement before the cursor. Separate statements with semicolons. Selecting text switches to **Run selection**, which runs only the selected text. Oracle accepts one SQL statement or PL/SQL block at a time.
 - Schema suggestions appear as you type: tables after `FROM` or `JOIN`, and columns in expressions such as `SELECT` and `WHERE`. Table aliases work too (`c.`). Use `↑`/`↓` to choose, `Tab` or `Return` to insert, `Esc` to close, or `Control-Space` to request suggestions. Connect first to load your Oracle schema.
 - Before running SQL, the app checks the session and reconnects if needed. If the connection fails during execution, the query is not automatically repeated; check the outcome before running it again.
@@ -84,6 +86,7 @@ Autocomplete suggests collections after `db.` or inside `getCollection("…")`, 
 - Results preview up to 1,000 rows. Filter the fetched rows or double-click a value to copy it; long Oracle text values are previews.
 - For Oracle and SQLite SELECT results, press `⌘⇧E` or choose **Export all query rows as CSV…** from the export menu to read every row through a database cursor. The original SELECT runs again on the same connection; explicit `LIMIT` and `FETCH FIRST` clauses still apply. Progress shows the processed row count. Long text/CLOB values are exported in full, nulls become empty fields, and binary values use `0x` hexadecimal text. The destination is replaced only after a successful export. **Export fetched rows as CSV…** saves the current preview without rerunning the query; this is also the available CSV export for MongoDB results.
 - Click a column name to toggle ascending/descending sorting for that column. Drag its right edge to resize it, or its left handle to reorder columns. These adjustments apply to fetched results and reset with each new result; CSV export keeps the original query order.
+- Hover over a result column name to see its data type and the available source column comment.
 - Drag across grid cells to select a purple rectangle; the grid scrolls at the edges while dragging. Press `⌘C` to copy the selection as TSV, or right-click and choose **Copy selection as CSV**. Only selected values are copied, in the displayed row and column order, with no headers; nulls become empty fields. Sorting, filtering, moving columns, or refreshing results clears the selection.
 - Open **History** to reload a recent query without running it.
 - With focus inside **Results**, press `⌘R` or click its refresh button to rerun the query that produced that result. Editing the console or moving its cursor does not change the refresh target. `⌘⇧R` still refreshes the schema.
@@ -93,6 +96,8 @@ Autocomplete suggests collections after `db.` or inside `getCollection("…")`, 
 Each connection has its own library. Press `⌘D` to bookmark the statement at the cursor, or the previous statement when the cursor is between queries. Each bookmark holds one SQL statement or PL/SQL block, with a name, color, and emoji, and belongs to the selected connection. A filled bookmark button means it's already saved in this connection; click it to edit. The matching library card is highlighted as you move the cursor. Click a card to focus its query in the console; if missing, the query is appended without replacing your work. Click the card’s play button to run only that saved query, or right-click to edit, copy, or delete it.
 
 Older bookmarks without a connection, and bookmarks from removed connections, stay under **Unassigned queries**. Select a connection and click **Move here** to add one to its library.
+
+Saving a bookmark adds `/* emoji title */` above its query, including the matching query in the console. Renaming it updates the title comment.
 
 Connections, bookmarks, and query drafts are saved locally. History and results last for the current app session.
 
