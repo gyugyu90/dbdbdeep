@@ -9,7 +9,11 @@ struct DatabaseIcon: View {
     private static var resources: Bundle {
         if let url = Bundle.main.url(forResource: "dbdbdeep_DBDeepApp", withExtension: "bundle"),
            let bundle = Bundle(url: url) { return bundle }
+        #if DEBUG
         return .module
+        #else
+        return .main
+        #endif
     }
 
     private static let images: [DBConnection.Kind: NSImage] = {
