@@ -1,0 +1,42 @@
+title = "dbdbdeep secret protection"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "dbdbdeep-password-literal"
+description = "Hardcoded password literal"
+regex = '''(?i)(?:\b(?:password|passwd|pwd)|["'](?:password|passwd|pwd)["'])\s*[:=]\s*["']([^"'\r\n]+)["']'''
+secretGroup = 1
+
+[[rules.allowlists]]
+condition = "AND"
+paths = ['''(?:^|/)Tests/''']
+regexes = ['''^(?:test-password|secret-for-test|private-test-value|local-test-secret|wrong-local-secret)$''']
+
+[[rules.allowlists]]
+regexes = ['''^(?:\$\{[^}]+\}|<[^>]+>|\[REDACTED\]|CHANGE_ME|CHANGEME)$''']
+
+[[rules]]
+id = "dbdbdeep-credential-uri"
+description = "Password embedded in a connection URI"
+regex = '''(?i)(?:mongodb(?:\+srv)?|postgres(?:ql)?|mysql|redis|https?)://[^\s/:@"']+:([^\s/@"']+)@'''
+secretGroup = 1
+
+[[rules.allowlists]]
+condition = "AND"
+paths = ['''(?:^|/)Tests/DBDeepCoreTests/MongoDatabaseTests\.swift$''']
+regexes = ['''^(?:pass|secret|p%40ss%3Aword)$''']
+
+[[rules.allowlists]]
+regexes = ['''^(?:\$\{[^}]+\}|<[^>]+>|CHANGE_ME|CHANGEME)$''']
+
+[[rules]]
+id = "dbdbdeep-env-secret"
+description = "Unquoted secret in an environment file"
+path = '''(?:^|/)\.env(?:\.[^/]+)?$'''
+regex = '''(?im)^[A-Z0-9_]*(?:PASSWORD|PASSWD|PWD|TOKEN|API_KEY|SECRET)\s*=\s*([^\s#"'][^\r\n#]*)'''
+secretGroup = 1
+
+[[rules.allowlists]]
+regexes = ['''^(?:\$\{[^}]+\}|<[^>]+>|CHANGE_ME|CHANGEME)\s*$''']

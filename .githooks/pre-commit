@@ -1,0 +1,4 @@
+#!/bin/sh
+set -eu
+TASK_ROOT="$(git rev-parse --show-toplevel)"
+exec python3 "$TASK_ROOT/scripts/check-secrets.py"

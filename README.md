@@ -26,6 +26,8 @@ cd dbdbdeep
 open build/dbdbdeep.app
 ```
 
+Before contributing, install Gitleaks (`brew install gitleaks`) and run `./scripts/install-git-hooks.sh` once in each clone. The pre-commit hook checks complete staged file contents, blocks ignored local settings and keys even when force-added, and reports possible secrets without printing their values. `.env.example` may contain placeholders, but is still scanned. Run `python3 scripts/check-secrets.py --all` to check all tracked files. Local hooks must be enabled in each clone and can be bypassed; they are a guard against mistakes, not a guarantee that every secret format will be detected.
+
 </details>
 
 ## Connect to Oracle
