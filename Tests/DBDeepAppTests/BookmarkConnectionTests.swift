@@ -38,8 +38,9 @@ final class BookmarkConnectionTests: XCTestCase {
         store.connections.append(second)
         store.bookmarks = []
         store.query = "SELECT 1;"
-        let local = QueryBookmark(name: "Local lookup", sql: store.query, connectionID: first.id)
+        var local = QueryBookmark(name: "Local lookup", sql: store.query, connectionID: first.id)
         XCTAssertTrue(store.saveBookmark(local))
+        local.sql = "/* ✨ Local lookup */\nSELECT 1;"
         store.newBookmark()
         XCTAssertEqual(store.editingBookmark?.id, local.id)
         store.showBookmark = false
@@ -49,8 +50,9 @@ final class BookmarkConnectionTests: XCTestCase {
         store.newBookmark()
         XCTAssertNil(store.editingBookmark)
         XCTAssertEqual(store.bookmarkDraftConnectionID, second.id)
-        let remote = QueryBookmark(name: "Remote lookup", sql: store.bookmarkDraftSQL, connectionID: second.id)
+        var remote = QueryBookmark(name: "Remote lookup", sql: store.bookmarkDraftSQL, connectionID: second.id)
         XCTAssertTrue(store.saveBookmark(remote))
+        remote.sql = "/* ✨ Remote lookup */\nSELECT 1;"
         XCTAssertEqual(store.currentBookmark?.id, remote.id)
         XCTAssertEqual(store.filteredBookmarks, [remote])
         XCTAssertEqual(store.bookmarks.count, 2)

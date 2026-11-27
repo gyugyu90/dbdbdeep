@@ -10,16 +10,18 @@ struct SQLTextEditor: NSViewRepresentable {
     var tables: [SchemaTable]
     var connectionKind: DBConnection.Kind
     var focusRequest: SQLEditorFocus?
+    var findRequest: UUID?
     var completionContextID: UUID?
     var loadMongoFields: (String) async -> [SchemaColumn]
 
-    init(text: Binding<String>, selection: Binding<String>, cursorLocation: Binding<Int> = .constant(0), tables: [SchemaTable] = [], connectionKind: DBConnection.Kind = .oracle, focusRequest: SQLEditorFocus? = nil, completionContextID: UUID? = nil, loadMongoFields: @escaping (String) async -> [SchemaColumn] = { _ in [] }) {
+    init(text: Binding<String>, selection: Binding<String>, cursorLocation: Binding<Int> = .constant(0), tables: [SchemaTable] = [], connectionKind: DBConnection.Kind = .oracle, focusRequest: SQLEditorFocus? = nil, findRequest: UUID? = nil, completionContextID: UUID? = nil, loadMongoFields: @escaping (String) async -> [SchemaColumn] = { _ in [] }) {
         _text = text
         _selection = selection
         _cursorLocation = cursorLocation
         self.tables = tables
         self.connectionKind = connectionKind
         self.focusRequest = focusRequest
+        self.findRequest = findRequest
         self.completionContextID = completionContextID
         self.loadMongoFields = loadMongoFields
     }
@@ -52,6 +54,9 @@ struct SQLTextEditor: NSViewRepresentable {
         view.isGrammarCheckingEnabled = false
         view.isAutomaticTextReplacementEnabled = false
         view.allowsUndo = true
+        view.usesFindBar = true
+        view.isIncrementalSearchingEnabled = true
+        view.findController = SQLTextFinder(editor: view)
         view.font = .monospacedSystemFont(ofSize: 13, weight: .regular)
         view.textColor = NSColor(Theme.editorText)
         view.backgroundColor = NSColor(Theme.surface)
@@ -67,6 +72,7 @@ struct SQLTextEditor: NSViewRepresentable {
         view.delegate = coordinator
         let scroll = NSScrollView()
         scroll.documentView = view
+        scroll.findBarPosition = .aboveContent
         scroll.hasVerticalScroller = true
         scroll.autohidesScrollers = true
         scroll.drawsBackground = true
@@ -101,6 +107,7 @@ struct SQLTextEditor: NSViewRepresentable {
         }
         scroll.verticalRulerView?.needsDisplay = true
         context.coordinator.scheduleFocus(in: view)
+        context.coordinator.scheduleFind(in: view)
     }
 
     static func dismantleNSView(_ scroll: NSScrollView, coordinator: Coordinator) {
@@ -129,6 +136,7 @@ struct SQLTextEditor: NSViewRepresentable {
         var onTruncate: (() -> Void)?
         private var showingLimitAlert = false
         private var scheduledFocusID: UUID?
+        private var scheduledFindID: UUID?
         private(set) var appliedFocusID: UUID?
         init(_ parent: SQLTextEditor) { self.parent = parent }
 
@@ -181,6 +189,15 @@ struct SQLTextEditor: NSViewRepresentable {
             DispatchQueue.main.async { [weak self, weak view] in
                 guard let self, let view else { return }
                 self.applyFocus(request, in: view)
+            }
+        }
+
+        func scheduleFind(in view: NSTextView) {
+            guard let request = parent.findRequest, request != scheduledFindID else { return }
+            scheduledFindID = request
+            DispatchQueue.main.async { [weak self, weak view] in
+                guard self?.parent.findRequest == request, let editor = view as? SQLCompletionTextView else { return }
+                editor.findController?.perform(.showFindInterface)
             }
         }
 

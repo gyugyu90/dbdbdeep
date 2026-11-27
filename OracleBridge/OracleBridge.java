@@ -1,5 +1,6 @@
 import java.io.*;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.*;
 import java.sql.*;
 import java.util.*;
 
@@ -75,9 +76,22 @@ public final class OracleBridge {
         return sql;
     }
 
-    private static String execute(Connection connection, String sql, int rowLimit) throws SQLException, IOException {
+    static String columnType(ResultSetMetaData meta, int index) throws SQLException {
+        String name = meta.getColumnTypeName(index);
+        if (name == null) return null;
+        int precision = meta.getPrecision(index);
+        if (precision > 0 && Set.of("CHAR", "NCHAR", "VARCHAR", "VARCHAR2", "NVARCHAR2", "RAW").contains(name)) return name + "(" + precision + ")";
+        if (precision > 0 && "NUMBER".equals(name)) {
+            int scale = meta.getScale(index);
+            return name + "(" + precision + (scale == 0 ? "" : "," + scale) + ")";
+        }
+        return name;
+    }
+
+    static String execute(Connection connection, String sql, int rowLimit) throws SQLException, IOException {
         long start = System.nanoTime();
         StringBuilder columns = new StringBuilder("[");
+        StringBuilder columnMetadata = new StringBuilder("[");
         StringBuilder rows = new StringBuilder("[");
         int affected = 0;
         boolean truncated = false;
@@ -91,6 +105,8 @@ public final class OracleBridge {
                     for (int i = 1; i <= count; i++) {
                         if (i > 1) columns.append(',');
                         columns.append(quote(meta.getColumnLabel(i)));
+                        if (i > 1) columnMetadata.append(',');
+                        columnMetadata.append("{\"type\":").append(quote(columnType(meta, i))).append('}');
                     }
                     int n = 0;
                     while (rs.next()) {
@@ -119,13 +135,148 @@ public final class OracleBridge {
                 }
             } else affected = Math.max(0, statement.getUpdateCount());
         }
-        return "{\"columns\":" + columns.append(']') + ",\"rows\":" + rows.append(']') +
+        return "{\"columns\":" + columns.append(']') + ",\"columnMetadata\":" + columnMetadata.append(']') + ",\"rows\":" + rows.append(']') +
             ",\"affected\":" + affected + ",\"elapsed\":" + (System.nanoTime() - start) / 1e9 +
             ",\"truncated\":" + truncated + ",\"message\":\"Query completed\"}";
     }
 
     private static String empty(String message) {
         return "{\"columns\":[],\"rows\":[],\"affected\":0,\"elapsed\":0,\"truncated\":false,\"message\":" + quote(message) + "}";
+    }
+
+    interface ExportProgress { void accept(long rows) throws IOException; }
+    record ExportResult(long rows, long bytes, double elapsed) {}
+
+    static boolean isSelectQuery(String sql) {
+        if (sql.indexOf('\0') >= 0) return false;
+        String first = null;
+        boolean select = false, ended = false;
+        int depth = 0;
+        for (int i = 0; i < sql.length();) {
+            char c = sql.charAt(i);
+            if (Character.isWhitespace(c)) { i++; continue; }
+            if (sql.startsWith("--", i)) {
+                while (i < sql.length() && sql.charAt(i) != '\n' && sql.charAt(i) != '\r') i++;
+                continue;
+            }
+            if (sql.startsWith("/*", i)) {
+                int end = sql.indexOf("*/", i + 2);
+                if (end < 0) return false;
+                i = end + 2; continue;
+            }
+            if (ended && c != ';') return false;
+            int q = (c == 'q' || c == 'Q') && i + 1 < sql.length() && sql.charAt(i + 1) == '\'' ? 2 :
+                (c == 'n' || c == 'N') && i + 2 < sql.length() && (sql.charAt(i + 1) == 'q' || sql.charAt(i + 1) == 'Q') && sql.charAt(i + 2) == '\'' ? 3 : 0;
+            if (q > 0) {
+                if (i + q >= sql.length()) return false;
+                char opening = sql.charAt(i + q);
+                char closing = switch (opening) { case '[' -> ']'; case '{' -> '}'; case '(' -> ')'; case '<' -> '>'; default -> opening; };
+                int end = sql.indexOf("" + closing + '\'', i + q + 1);
+                if (end < 0) return false;
+                i = end + 2; continue;
+            }
+            if (c == '\'' || c == '"' || c == '`' || c == '[') {
+                char closing = c == '[' ? ']' : c;
+                boolean closed = false;
+                for (i++; i < sql.length(); i++) {
+                    if (sql.charAt(i) != closing) continue;
+                    if (c != '[' && i + 1 < sql.length() && sql.charAt(i + 1) == closing) { i++; continue; }
+                    i++; closed = true; break;
+                }
+                if (!closed) return false;
+                continue;
+            }
+            if (Character.isLetter(c) || c == '_') {
+                int start = i++;
+                while (i < sql.length() && (Character.isLetterOrDigit(sql.charAt(i)) || "_$#".indexOf(sql.charAt(i)) >= 0)) i++;
+                String word = sql.substring(start, i).toUpperCase(Locale.ROOT);
+                if (first == null) {
+                    first = word;
+                    if (!word.equals("SELECT") && !word.equals("WITH")) return false;
+                    select = word.equals("SELECT");
+                } else if (!select && depth == 0) {
+                    if (word.equals("SELECT")) select = true;
+                    else if (Set.of("INSERT", "UPDATE", "DELETE", "MERGE", "FUNCTION", "PROCEDURE", "BEGIN", "CREATE").contains(word)) return false;
+                }
+                continue;
+            }
+            if (c == '(') depth++;
+            else if (c == ')') { if (--depth < 0) return false; }
+            else if (c == ';' && depth == 0) ended = true;
+            i++;
+        }
+        return select && depth == 0;
+    }
+
+    static void csvField(Writer writer, Reader value) throws IOException {
+        if (value == null) return;
+        writer.write('"');
+        char[] buffer = new char[8192];
+        int size;
+        while ((size = value.read(buffer)) != -1) {
+            int start = 0;
+            for (int i = 0; i < size; i++) {
+                if (buffer[i] != '"') continue;
+                writer.write(buffer, start, i - start + 1); writer.write('"'); start = i + 1;
+            }
+            writer.write(buffer, start, size - start);
+        }
+        writer.write('"');
+    }
+
+    static ExportResult exportCSV(Connection connection, String sql, Path path, ExportProgress progress) throws SQLException, IOException {
+        if (!isSelectQuery(sql)) throw new SQLException("Full export requires one SELECT query, including SELECT with a WITH clause.");
+        long start = System.nanoTime(), lastProgress = start, rows = 0;
+        try (PreparedStatement statement = connection.prepareStatement(normalize(sql), ResultSet.TYPE_FORWARD_ONLY, ResultSet.CONCUR_READ_ONLY)) {
+            statement.setFetchSize(1000);
+            try (ResultSet rs = statement.executeQuery();
+                 BufferedWriter writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8, StandardOpenOption.CREATE_NEW, StandardOpenOption.WRITE)) {
+                ResultSetMetaData meta = rs.getMetaData();
+                int count = meta.getColumnCount();
+                int[] types = new int[count];
+                for (int i = 0; i < count; i++) {
+                    if (i > 0) writer.write(',');
+                    csvField(writer, new StringReader(meta.getColumnLabel(i + 1)));
+                    types[i] = meta.getColumnType(i + 1);
+                }
+                writer.write("\r\n");
+                while (rs.next()) {
+                    for (int i = 0; i < count; i++) {
+                        if (i > 0) writer.write(',');
+                        int type = types[i];
+                        if (type == Types.BLOB || type == Types.BINARY || type == Types.VARBINARY || type == Types.LONGVARBINARY) {
+                            try (InputStream value = rs.getBinaryStream(i + 1)) {
+                                if (value != null) {
+                                    writer.write("\"0x");
+                                    byte[] bytes = new byte[8192];
+                                    char[] hex = new char[16384];
+                                    char[] digits = "0123456789ABCDEF".toCharArray();
+                                    int size;
+                                    while ((size = value.read(bytes)) != -1) {
+                                        for (int n = 0; n < size; n++) {
+                                            hex[n * 2] = digits[(bytes[n] & 255) >>> 4]; hex[n * 2 + 1] = digits[bytes[n] & 15];
+                                        }
+                                        writer.write(hex, 0, size * 2);
+                                    }
+                                    writer.write('"');
+                                }
+                            }
+                        } else if (type == Types.CLOB || type == Types.NCLOB || type == Types.LONGVARCHAR || type == Types.LONGNVARCHAR) {
+                            try (Reader value = rs.getCharacterStream(i + 1)) { csvField(writer, value); }
+                        } else {
+                            String value = rs.getString(i + 1);
+                            csvField(writer, value == null ? null : new StringReader(value));
+                        }
+                    }
+                    writer.write("\r\n"); rows++;
+                    if (rows % 1000 == 0 && System.nanoTime() - lastProgress >= 100_000_000) {
+                        progress.accept(rows); lastProgress = System.nanoTime();
+                    }
+                }
+            }
+        }
+        progress.accept(rows);
+        return new ExportResult(rows, Files.size(path), (System.nanoTime() - start) / 1e9);
     }
 
     static void verifyConnection(Connection connection, int timeout) throws SQLException {
@@ -197,9 +348,15 @@ public final class OracleBridge {
                         case "rollback": connection.rollback(); send(empty("Changes rolled back")); break;
                         case "close": return;
                         case "schema": send(execute(connection, sql, 100000)); break;
+                        case "exportCSV": {
+                            Path path = Path.of(read());
+                            ExportResult result = exportCSV(connection, sql, path, rows -> send("{\"exportProgress\":" + rows + "}"));
+                            send("{\"exportComplete\":{\"rows\":" + result.rows() + ",\"bytes\":" + result.bytes() + ",\"elapsed\":" + result.elapsed() + "}}");
+                            break;
+                        }
                         default: send(execute(connection, sql, 1000));
                     }
-                } catch (SQLException error) {
+                } catch (Exception error) {
                     send(failure(error, "session"));
                 }
             }

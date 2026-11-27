@@ -99,11 +99,24 @@ private final class OracleSession {
         return data
     }
 
-    private func receiveFrame() throws -> OracleBridgeFrame {
+    private func receivePayload() throws -> Data {
         let header = try readExactly(4)
         let size = header.reduce(UInt32(0)) { ($0 << 8) | UInt32($1) }
         guard size <= 64_000_000 else { throw DatabaseError("Oracle 응답이 너무 큽니다.") }
-        return try OracleBridgeFrame.decode(readExactly(Int(size)))
+        return try readExactly(Int(size))
+    }
+
+    private func receiveFrame() throws -> OracleBridgeFrame { try OracleBridgeFrame.decode(receivePayload()) }
+
+    func exportCSV(_ sql: String, to destination: URL, onProgress: QueryExportProgressHandler) throws -> QueryExportSummary {
+        try send(["exportCSV", sql, destination.path])
+        while true {
+            switch try QueryExportFrame.decode(receivePayload()) {
+            case .progress(let rows): onProgress(rows)
+            case .complete(let summary): return summary
+            case .failure(let failure): throw failure
+            }
+        }
     }
 
     func request(_ action: String, sql: String = "") throws -> QueryResult {
@@ -133,6 +146,17 @@ public actor OracleDatabase {
         guard let session else { throw DatabaseError("먼저 Oracle에 연결해 주세요.") }
         guard !sql.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw DatabaseError("실행할 SQL을 입력해 주세요.") }
         return try session.request("execute", sql: sql)
+    }
+
+    public func exportCSV(_ sql: String, to destination: URL, onProgress: QueryExportProgressHandler = { _ in }) throws -> QueryExportSummary {
+        guard let session, let query = SQLStatementLocator.selectStatement(in: sql) else {
+            throw DatabaseError("Full export requires an Oracle connection and one SELECT query.")
+        }
+        let output = try AtomicQueryExport(destination: destination)
+        defer { output.discard() }
+        let summary = try session.exportCSV(query.text, to: output.temporary, onProgress: onProgress)
+        try output.finish()
+        return summary
     }
 
     public func validateConnection() throws {

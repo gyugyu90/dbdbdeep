@@ -6,6 +6,7 @@ struct ResultsShortcut<Content: View>: NSViewRepresentable {
     let refresh: () -> Void
     var canCopy = false
     var copySelection: () -> Void = {}
+    var selectionFocusRequest: UUID?
     @ViewBuilder var content: () -> Content
 
     func makeNSView(context: Context) -> ResultsShortcutView {
@@ -16,6 +17,7 @@ struct ResultsShortcut<Content: View>: NSViewRepresentable {
         view.refresh = refresh
         view.canCopy = canCopy
         view.copySelection = copySelection
+        view.selectionFocusRequest = selectionFocusRequest
         return view
     }
 
@@ -27,15 +29,20 @@ struct ResultsShortcut<Content: View>: NSViewRepresentable {
         view.refresh = refresh
         view.canCopy = canCopy
         view.copySelection = copySelection
+        view.selectionFocusRequest = selectionFocusRequest
     }
 }
 
-final class ResultsShortcutView: NSView {
+final class ResultsShortcutView: NSView, NSUserInterfaceValidations {
     let content: NSView
     var canRefresh = false
     var refresh: () -> Void = {}
     var canCopy = false
     var copySelection: () -> Void = {}
+    var selectionFocusRequest: UUID? {
+        didSet { focusSelectionIfNeeded() }
+    }
+    private var appliedFocusRequest: UUID?
     private var monitor: Any?
 
     init(content: NSView) {
@@ -61,6 +68,7 @@ final class ResultsShortcutView: NSView {
             guard let self else { return event }
             return self.handle(event)
         }
+        focusSelectionIfNeeded()
     }
 
     deinit { if let monitor { NSEvent.removeMonitor(monitor) } }
@@ -70,17 +78,36 @@ final class ResultsShortcutView: NSView {
         return responder === self || responder.isDescendant(of: self)
     }
 
+    private var canCopySelection: Bool {
+        canCopy && hasResultsFocus && !(window?.firstResponder is NSText)
+    }
+
+    private func focusSelectionIfNeeded() {
+        guard let selectionFocusRequest, selectionFocusRequest != appliedFocusRequest,
+              let window, window.makeFirstResponder(self) else { return }
+        appliedFocusRequest = selectionFocusRequest
+    }
+
+    @objc func copy(_ sender: Any?) {
+        guard canCopySelection else { return }
+        copySelection()
+    }
+
+    func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        item.action == #selector(copy(_:)) && canCopySelection
+    }
+
     func handle(_ event: NSEvent) -> NSEvent? {
         guard let window, event.window === window else { return event }
         if event.type == .keyDown {
             let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
             guard modifiers == .command, hasResultsFocus else { return event }
-            if event.charactersIgnoringModifiers?.lowercased() == "c" {
-                guard canCopy, !(window.firstResponder is NSText) else { return event }
+            if CommandKeyboard.character(in: event) == "c" {
+                guard canCopySelection else { return event }
                 if !event.isARepeat { copySelection() }
                 return nil
             }
-            guard event.charactersIgnoringModifiers?.lowercased() == "r" else { return event }
+            guard CommandKeyboard.character(in: event) == "r" else { return event }
             if canRefresh && !event.isARepeat {
                 window.makeFirstResponder(self)
                 refresh()

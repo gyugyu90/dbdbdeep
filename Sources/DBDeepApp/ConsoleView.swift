@@ -3,6 +3,7 @@ import DBDeepCore
 
 struct ConsoleView: View {
     @EnvironmentObject var store: AppStore
+    @State private var findRequest: UUID?
 
     var body: some View {
         VStack(spacing: 0) {
@@ -56,6 +57,7 @@ struct ConsoleView: View {
                     .help(store.selectedSQL.isEmpty ? "Run the statement at or before the cursor · ⌘↵" : "Run only the selected SQL · ⌘↵")
                 Text("⌘ ↵").font(.system(size: 10)).foregroundStyle(Theme.secondary).padding(.leading, 2)
                 Spacer(minLength: 0)
+                IconButton(icon: "magnifyingglass", help: "Find in query console · ⌘F") { findRequest = UUID() }
                 let bookmark = store.currentBookmark
                 IconButton(icon: bookmark == nil ? "bookmark" : "bookmark.fill", help: bookmark.map { "Edit bookmark · \($0.name) · ⌘D" } ?? "Bookmark the statement at or before the cursor · ⌘D") { store.newBookmark() }
                     .keyboardShortcut("d", modifiers: .command).disabled(!store.canBookmarkQuery)
@@ -64,7 +66,7 @@ struct ConsoleView: View {
                 IconButton(icon: "arrow.uturn.backward", help: "Roll back changes") { Task { await store.transaction(commit: false) } }.disabled(!store.canUseTransactions)
                 CapsuleTag(text: store.connection?.kind == .mongodb ? "IMMEDIATE WRITES" : "MANUAL COMMIT", color: store.connection?.kind == .mongodb ? "peach" : "mint").padding(.leading, 3)
             }.padding(.horizontal, 16).frame(height: 54)
-            SQLTextEditor(text: $store.query, selection: $store.selectedSQL, cursorLocation: $store.cursorLocation, tables: store.tables, connectionKind: store.connection?.kind ?? .oracle, focusRequest: store.editorFocusRequest, completionContextID: store.selectedID, loadMongoFields: { await store.mongoFields(in: $0) })
+            SQLTextEditor(text: $store.query, selection: $store.selectedSQL, cursorLocation: $store.cursorLocation, tables: store.tables, connectionKind: store.connection?.kind ?? .oracle, focusRequest: store.editorFocusRequest, findRequest: findRequest, completionContextID: store.selectedID, loadMongoFields: { await store.mongoFields(in: $0) })
             HStack(spacing: 5) {
                 Image(systemName: "info.circle").font(.system(size: 9))
                 Text(store.selectedSQL.isEmpty ? (store.sqlToRun.isEmpty ? "Place the cursor in or after a SQL statement" : "Statement at or before cursor will run · ⌘↵") : "Only selected SQL will run · ⌘↵")

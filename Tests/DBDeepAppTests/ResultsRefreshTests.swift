@@ -151,6 +151,51 @@ final class ResultsRefreshTests: XCTestCase {
         XCTAssertNotNil(scope.handle(key(other)))
     }
 
+    func testGridSelectionTakesFocusFromFilterAndCopiesWithCommandC() {
+        let (window, scope, editor, filter) = makeShortcutWindow()
+        defer { window.contentView = nil }
+        var copies = 0
+        scope.canCopy = true
+        scope.copySelection = { copies += 1 }
+        window.makeFirstResponder(filter)
+        let request = UUID()
+        scope.selectionFocusRequest = request
+        XCTAssertTrue(window.firstResponder === scope)
+        XCTAssertNil(scope.handle(key(window, character: "c")))
+        XCTAssertEqual(copies, 1)
+
+        window.makeFirstResponder(editor)
+        scope.selectionFocusRequest = request
+        XCTAssertTrue(window.firstResponder === editor)
+        scope.selectionFocusRequest = UUID()
+        XCTAssertTrue(window.firstResponder === scope)
+    }
+
+    func testStandardCopyActionUsesSelectionAndValidatesEditMenu() {
+        let (window, scope, editor, filter) = makeShortcutWindow()
+        defer { window.contentView = nil }
+        var copies = 0
+        scope.canCopy = true
+        scope.copySelection = { copies += 1 }
+        let item = NSMenuItem(title: "Copy", action: #selector(ResultsShortcutView.copy(_:)), keyEquivalent: "c")
+        window.makeFirstResponder(scope)
+        XCTAssertTrue(scope.validateUserInterfaceItem(item))
+        XCTAssertTrue(scope.tryToPerform(item.action!, with: nil))
+        XCTAssertEqual(copies, 1)
+
+        for responder in [editor as NSView, filter] {
+            window.makeFirstResponder(responder)
+            XCTAssertFalse(scope.validateUserInterfaceItem(item))
+            scope.copy(nil)
+            XCTAssertEqual(copies, 1)
+        }
+        window.makeFirstResponder(scope)
+        scope.canCopy = false
+        XCTAssertFalse(scope.validateUserInterfaceItem(item))
+        scope.copy(nil)
+        XCTAssertEqual(copies, 1)
+    }
+
     private func makeStore() throws -> AppStore {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         addTeardownBlock { try FileManager.default.removeItem(at: directory) }

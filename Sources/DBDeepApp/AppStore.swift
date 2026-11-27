@@ -23,6 +23,8 @@ final class AppStore: ObservableObject {
     @Published var connectedIDs: Set<UUID> = []
     @Published var isBusy = false
     @Published private(set) var isRunningQuery = false
+    @Published private(set) var isExporting = false
+    @Published private(set) var exportedRows = 0
     @Published var error: String?
     @Published var status = "Ready when you are"
     @Published var showConnection = false
@@ -54,7 +56,7 @@ final class AppStore: ObservableObject {
     private var drafts: [String: String] = [:]
     private var persistWork: DispatchWorkItem?
     private var schemaByConnection: [UUID: [SchemaTable]] = [:]
-    private var resultQueries: [UUID: (resultID: UUID, sql: String)] = [:]
+    private var resultQueries: [UUID: (resultID: UUID, sql: String, isSelect: Bool)] = [:]
     private var cachedStatements: [SQLStatement]?
     private var cachedLineCount: Int?
     private struct Cached<Value> { let value: Value }
@@ -68,6 +70,12 @@ final class AppStore: ObservableObject {
     var canRefreshResults: Bool {
         guard !isBusy, let connection, let result, let source = resultQueries[connection.id] else { return false }
         return source.resultID == result.id
+    }
+    var canExportFetchedRows: Bool { !isBusy && result?.columns.isEmpty == false }
+    var canExportAllQueryRows: Bool {
+        guard canExportFetchedRows, let connection, connection.kind != .mongodb, let result,
+              let source = resultQueries[connection.id], source.resultID == result.id else { return false }
+        return source.isSelect
     }
     var isConnected: Bool { selectedID.map { connectedIDs.contains($0) } ?? false }
     var queryLineCount: Int {
@@ -338,12 +346,13 @@ final class AppStore: ObservableObject {
         do {
             let output = try await sessions.execute(sql, on: connection)
             results[connection.id] = output
-            resultQueries[connection.id] = (output.id, sql)
+            resultQueries[connection.id] = (output.id, sql, connection.kind != .mongodb && SQLStatementLocator.selectStatement(in: sql) != nil)
             history.insert((sql, Date()), at: 0)
             history = Array(history.prefix(50))
             status = output.message
             do { try await loadSchema(connection) }
             catch { status += " · schema refresh unavailable" }
+            results[connection.id] = output.withColumnMetadata(sql: sql, tables: schemaByConnection[connection.id] ?? [], kind: connection.kind, defaultSchema: connection.username)
             persist()
         } catch {
             if connection.kind != .sample && sessions.contains(connection) {
@@ -355,7 +364,7 @@ final class AppStore: ObservableObject {
         }
     }
 
-    private func prepareConnectionForQuery(_ target: DBConnection) async -> Bool {
+    private func prepareConnectionForQuery(_ target: DBConnection, preserveResult: Bool = false) async -> Bool {
         if target.kind == .sample {
             if sessions.contains(target) && connectedIDs.contains(target.id) { return true }
         } else if sessions.contains(target) {
@@ -365,17 +374,19 @@ final class AppStore: ObservableObject {
                 connectedIDs.insert(target.id)
                 return true
             } catch {
-                await invalidateSession(target)
+                await invalidateSession(target, preserveResult: preserveResult)
             }
         }
         status = "Connecting before query…"
         return await openConnection(target, purpose: "Connect before query")
     }
 
-    private func invalidateSession(_ target: DBConnection) async {
+    private func invalidateSession(_ target: DBConnection, preserveResult: Bool = false) async {
         connectedIDs.remove(target.id)
-        results.removeValue(forKey: target.id)
-        resultQueries.removeValue(forKey: target.id)
+        if !preserveResult {
+            results.removeValue(forKey: target.id)
+            resultQueries.removeValue(forKey: target.id)
+        }
         schemaByConnection.removeValue(forKey: target.id)
         if selectedID == target.id { tables = [] }
         await sessions.disconnect(target)
@@ -425,6 +436,9 @@ final class AppStore: ObservableObject {
             if reportErrors { self.error = error.localizedDescription }
             return false
         }
+        if bookmark.sql.hasPrefix(BookmarkAnnotation.header(for: bookmark)) {
+            annotateConsole(for: bookmark, previous: bookmark)
+        }
         error = nil
         persist()
         status = "Query focused · \(bookmark.name)"
@@ -460,15 +474,40 @@ final class AppStore: ObservableObject {
     func saveBookmark(_ bookmark: QueryBookmark) -> Bool {
         guard !isBusy, let connection, bookmark.connectionID == connection.id,
               let statement = queryLanguage.singleStatement(in: bookmark.sql) else { return false }
+        let previous = bookmarks.first { $0.id == bookmark.id }
+        guard previous == nil || previous?.connectionID == connection.id else { return false }
         var saved = bookmark
-        saved.sql = statement.text
+        saved.sql = BookmarkAnnotation.apply(to: statement.text, bookmark: bookmark, previous: previous)
         if let index = bookmarks.firstIndex(where: { $0.id == saved.id }) {
             guard bookmarks[index].connectionID == connection.id else { return false }
             bookmarks[index] = saved
         }
         else { bookmarks.insert(saved, at: 0) }
+        annotateConsole(for: saved, previous: previous)
         persist(); showBookmark = false
         return true
+    }
+
+    private func annotateConsole(for bookmark: QueryBookmark, previous: QueryBookmark?) {
+        guard let key = queryLanguage.comparisonKey(for: bookmark.sql) else { return }
+        let matches = queryLanguage.statements(in: query).filter { queryLanguage.comparisonKey(for: $0.text) == key }
+        guard let target = matches.first(where: { $0.range == cursorStatement?.range }) ?? matches.first else { return }
+        let source = query as NSString
+        var range = target.range
+        if connection?.kind == .mongodb {
+            let prefix = source.substring(to: range.location)
+            let headers = [BookmarkAnnotation.header(for: bookmark)] + (previous.map { [BookmarkAnnotation.header(for: $0)] } ?? [])
+            if let header = headers.first(where: { prefix.hasSuffix($0 + "\n") }) {
+                let length = (header + "\n").utf16.count
+                range = NSRange(location: range.location - length, length: range.length + length)
+            }
+        }
+        let replacement = BookmarkAnnotation.apply(to: source.substring(with: range), bookmark: bookmark, previous: previous)
+        let updated = source.replacingCharacters(in: range, with: replacement)
+        guard SQLLineIndex(updated).count <= SQLLineIndex.maximumLines else { return }
+        query = updated
+        selectedSQL = ""; cursorLocation = range.location + (BookmarkAnnotation.header(for: bookmark) + "\n").utf16.count
+        editorFocusRequest = SQLEditorFocus(range: NSRange(location: cursorLocation, length: replacement.utf16.count - (cursorLocation - range.location)))
     }
 
     func removeBookmark(_ bookmark: QueryBookmark) {
@@ -533,9 +572,48 @@ final class AppStore: ObservableObject {
         catch { self.error = "저장 실패: \(error.localizedDescription)" }
     }
 
-    func exportCSV() {
-        guard let result, !result.columns.isEmpty else { return }
-        do { if try QueryResultExporter.export(result) { status = "CSV exported ✓" } }
-        catch { self.error = error.localizedDescription }
+    func exportCSV(scope requested: QueryExportScope? = nil) async {
+        guard canExportFetchedRows else { return }
+        let scope = requested ?? (canExportAllQueryRows ? .allQueryRows : .fetchedRows)
+        guard scope != .allQueryRows || canExportAllQueryRows,
+              let destination = QueryResultExporter.destination(scope: scope) else { return }
+        if scope == .allQueryRows { await exportAllQueryRows(to: destination) }
+        else { await exportFetchedRows(to: destination) }
+    }
+
+    func exportAllQueryRows(to destination: URL) async {
+        guard canExportAllQueryRows, let connection, let source = resultQueries[connection.id] else { return }
+        isBusy = true; isExporting = true; exportedRows = 0; error = nil
+        defer { isExporting = false; isBusy = false }
+        guard await prepareConnectionForQuery(connection, preserveResult: true) else { return }
+        status = "Exporting all query rows…"
+        do {
+            let summary = try await sessions.exportCSV(source.sql, on: connection, to: destination) { [weak self] rows in
+                Task { @MainActor [weak self] in
+                    guard let self, self.isExporting, rows >= self.exportedRows else { return }
+                    self.exportedRows = rows
+                    self.status = "Exporting · \(rows.formatted()) rows processed"
+                }
+            }
+            exportedRows = summary.rows
+            status = "Exported \(summary.rows.formatted()) rows · CSV saved ✓"
+        } catch {
+            self.error = error.localizedDescription
+            status = "CSV export failed · destination preserved"
+        }
+    }
+
+    func exportFetchedRows(to destination: URL) async {
+        guard canExportFetchedRows, let result else { return }
+        isBusy = true; isExporting = true; exportedRows = 0; error = nil
+        defer { isExporting = false; isBusy = false }
+        status = "Exporting fetched rows…"
+        do {
+            try await Task.detached(priority: .userInitiated) {
+                try result.csv.write(to: destination, atomically: true, encoding: .utf8)
+            }.value
+            exportedRows = result.rows.count
+            status = "Exported \(result.rows.count.formatted()) fetched rows · CSV saved ✓"
+        } catch { self.error = error.localizedDescription; status = "CSV export failed" }
     }
 }

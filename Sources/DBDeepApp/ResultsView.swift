@@ -7,6 +7,7 @@ struct ResultsView: View {
     @State private var filter = ""
     @State private var copiedCell: CopiedCell?
     @State private var selection: ResultGridSelection?
+    @State private var selectionFocusRequest: UUID?
     @State private var dragAnchor: ResultGridSelection.Cell?
     @State private var copiedSelection: UUID?
     @State private var dragScroller = ResultGridDragScroller()
@@ -37,7 +38,7 @@ struct ResultsView: View {
 
     var body: some View {
         ResultsShortcut(canRefresh: store.canRefreshResults, refresh: { Task { await store.refreshResults() } },
-                        canCopy: canCopySelection, copySelection: { copySelection(as: .tsv) }) {
+                        canCopy: canCopySelection, copySelection: { copySelection(as: .tsv) }, selectionFocusRequest: selectionFocusRequest) {
             resultsContent.environmentObject(store)
         }
     }
@@ -62,7 +63,14 @@ struct ResultsView: View {
                 if let result = store.result {
                     Label(String(format: "%.0f ms", result.elapsed * 1000), systemImage: "clock").font(.system(size: 9)).foregroundStyle(Theme.secondary)
                     IconButton(icon: "arrow.clockwise", help: "Refresh this result · ⌘R") { Task { await store.refreshResults() } }.disabled(!store.canRefreshResults)
-                    IconButton(icon: "square.and.arrow.up", help: "Export all fetched rows as CSV") { store.exportCSV() }.disabled(result.columns.isEmpty)
+                    Menu {
+                        Button("Export all query rows as CSV…") { Task { await store.exportCSV(scope: .allQueryRows) } }.disabled(!store.canExportAllQueryRows)
+                        Button("Export fetched rows as CSV…") { Task { await store.exportCSV(scope: .fetchedRows) } }.disabled(!store.canExportFetchedRows)
+                    } label: {
+                        Image(systemName: "square.and.arrow.up").font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(Theme.secondary).frame(width: 25, height: 25)
+                    }.menuStyle(.borderlessButton).menuIndicator(.hidden).fixedSize()
+                        .help("Export query results as CSV").disabled(!store.canExportFetchedRows)
                 }
             }.padding(.horizontal, 17).frame(height: 43)
             if let error = store.error {
@@ -107,9 +115,11 @@ struct ResultsView: View {
                 Spacer()
             }
         }.background(Theme.surface).overlay(alignment: .top) { Theme.line.frame(height: 1) }
-            .disabled(store.isRunningQuery)
+            .disabled(store.isRunningQuery || store.isExporting)
             .overlay {
-                if store.isRunningQuery { QueryLoadingOverlay(status: store.status) }
+                if store.isRunningQuery || store.isExporting {
+                    QueryLoadingOverlay(status: store.status, title: store.isExporting ? "Exporting query results…" : "Waiting for results…")
+                }
             }
             .onChange(of: store.result?.id, initial: true) { _, _ in
                 filter = ""; clearSelection()
@@ -176,7 +186,7 @@ struct ResultsView: View {
                     HStack(spacing: 0) {
                         Text("#").font(.system(size: 10)).foregroundStyle(Theme.secondary).frame(width: 38, height: 34)
                         ForEach(columns, id: \.self) { index in
-                            ResultColumnHeader(name: result.columns[index], width: width(index, result: result),
+                            ResultColumnHeader(name: result.columns[index], tooltip: result.columnTooltip(at: index), width: width(index, result: result),
                                 sortDirection: grid.sortColumn == index ? grid.sortDirection : nil,
                                 isDragging: columnDrag?.source == index,
                                 dropAfter: columnDrag?.target == index && columnDrag?.source != index ? columnDrag?.after : nil,
@@ -209,7 +219,8 @@ struct ResultsView: View {
         }
     }
 
-    private func setSelection(_ value: ResultGridSelection) {
+    private func setSelection(_ value: ResultGridSelection, focus: Bool = true) {
+        if focus { selectionFocusRequest = UUID() }
         guard selection != value else { return }
         copiedSelection = nil; copiedCell = nil
         selection = value
@@ -231,13 +242,13 @@ struct ResultsView: View {
         DragGesture(minimumDistance: 3, coordinateSpace: .named("resultCells"))
             .updating($isSelectingCells) { _, active, _ in active = true }
             .onChanged { value in
-                if dragAnchor == nil { dragAnchor = cell }
+                if dragAnchor == nil { dragAnchor = cell; selectionFocusRequest = UUID() }
                 if let anchor = dragAnchor, let extent = layout.cell(at: value.location) {
-                    setSelection(.init(anchor: anchor, extent: extent))
+                    setSelection(.init(anchor: anchor, extent: extent), focus: false)
                 }
                 dragScroller.track { point in
                     if let anchor = dragAnchor, let extent = layout.cell(at: point) {
-                        setSelection(.init(anchor: anchor, extent: extent))
+                        setSelection(.init(anchor: anchor, extent: extent), focus: false)
                     }
                 }
             }

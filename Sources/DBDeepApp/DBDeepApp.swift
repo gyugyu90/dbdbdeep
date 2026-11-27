@@ -3,10 +3,12 @@ import SwiftUI
 @main
 struct DBDeepApp: App {
     @StateObject private var store = AppStore()
+    @StateObject private var commandKeyboard = CommandKeyboard()
     @AppStorage("appearanceMode") private var appearanceMode: AppAppearance = .system
     var body: some Scene {
         Window("dbdbdeep", id: "workspace") {
             WorkspaceView().environmentObject(store)
+                .onAppear { _ = commandKeyboard }
                 .onChange(of: appearanceMode, initial: true) { _, mode in mode.apply() }
         }
         .windowStyle(.hiddenTitleBar)
@@ -23,7 +25,8 @@ struct DBDeepApp: App {
                 Button("Commit changes") { Task { await store.transaction(commit: true) } }.keyboardShortcut(.return, modifiers: [.command, .shift]).disabled(!store.canUseTransactions)
                 Button("Rollback changes") { Task { await store.transaction(commit: false) } }.disabled(!store.canUseTransactions)
                 Divider()
-                Button("Export result as CSV…") { store.exportCSV() }.keyboardShortcut("e", modifiers: [.command, .shift]).disabled(store.result?.columns.isEmpty != false)
+                Button(store.canExportAllQueryRows ? "Export all query rows as CSV…" : "Export fetched rows as CSV…") { Task { await store.exportCSV() } }
+                    .keyboardShortcut("e", modifiers: [.command, .shift]).disabled(!store.canExportFetchedRows)
                 Button("Refresh schema") { Task { await store.refreshSchema() } }.keyboardShortcut("r", modifiers: [.command, .shift]).disabled(!store.isConnected || store.isBusy)
             }
             CommandGroup(after: .sidebar) {

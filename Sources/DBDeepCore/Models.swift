@@ -104,14 +104,16 @@ public struct QueryResult: Codable, Sendable, Identifiable {
     public var truncated: Bool
     public var message: String
     public var documents: [String]?
+    public var columnMetadata: [ResultColumnMetadata]?
 
-    public init(columns: [String] = [], rows: [[String?]] = [], affected: Int = 0, elapsed: Double = 0, truncated: Bool = false, message: String = "", documents: [String]? = nil) {
+    public init(columns: [String] = [], rows: [[String?]] = [], affected: Int = 0, elapsed: Double = 0, truncated: Bool = false, message: String = "", documents: [String]? = nil, columnMetadata: [ResultColumnMetadata]? = nil) {
         self.columns = columns; self.rows = rows; self.affected = affected
         self.elapsed = elapsed; self.truncated = truncated; self.message = message
         self.documents = documents
+        self.columnMetadata = columnMetadata
     }
 
-    enum CodingKeys: String, CodingKey { case columns, rows, affected, elapsed, truncated, message, documents }
+    enum CodingKeys: String, CodingKey { case columns, rows, affected, elapsed, truncated, message, documents, columnMetadata }
 
     public var csv: String {
         func cell(_ value: String?) -> String {

@@ -6,6 +6,25 @@ public struct SQLStatement: Equatable, Sendable {
 }
 
 public enum SQLStatementLocator {
+    public static func selectStatement(in sql: String) -> SQLStatement? {
+        guard !sql.contains("\0"), let statement = singleStatement(in: sql) else { return nil }
+        let tokens = tokenize(statement.text)
+        if tokens.first?.word == "SELECT" { return statement }
+        guard tokens.first?.word == "WITH" else { return nil }
+        let source = statement.text as NSString
+        var depth = 0
+        for token in tokens.dropFirst() {
+            let symbol = source.substring(with: token.range)
+            if symbol == "(" { depth += 1 }
+            else if symbol == ")" { depth -= 1 }
+            else if depth == 0, let word = token.word {
+                if word == "SELECT" { return statement }
+                if ["INSERT", "UPDATE", "DELETE", "MERGE", "FUNCTION", "PROCEDURE", "BEGIN", "CREATE"].contains(word) { return nil }
+            }
+        }
+        return nil
+    }
+
     public static func appendingStatement(_ statement: String, to sql: String) -> (sql: String, range: NSRange)? {
         guard let incoming = singleStatement(in: statement) else { return nil }
         let tokens = tokenize(sql)

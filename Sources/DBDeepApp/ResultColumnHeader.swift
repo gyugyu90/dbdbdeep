@@ -2,6 +2,7 @@ import SwiftUI
 
 struct ResultColumnHeader: View {
     let name: String
+    let tooltip: String
     let width: CGFloat
     let sortDirection: ResultGridState.SortDirection?
     let isDragging: Bool
@@ -40,7 +41,7 @@ struct ResultColumnHeader: View {
                     Spacer(minLength: 0)
                 }.frame(maxWidth: .infinity, maxHeight: .infinity).contentShape(Rectangle())
             }.buttonStyle(.plain).padding(.trailing, 8)
-                .help("Sort \(name) \(sortDirection == .ascending ? "descending" : "ascending")")
+                .help(tooltip)
                 .accessibilityLabel("Sort by \(name)")
                 .accessibilityValue(sortDirection.map { $0 == .ascending ? "Ascending" : "Descending" } ?? "Not sorted")
         }.opacity(isDragging ? 0.45 : 1)

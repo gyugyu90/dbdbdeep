@@ -75,6 +75,15 @@ final class DatabaseSessions {
         return try await remoteSession(for: connection).execute(sql)
     }
 
+    func exportCSV(_ sql: String, on connection: DBConnection, to destination: URL, onProgress: @escaping QueryExportProgressHandler) async throws -> QueryExportSummary {
+        if connection.kind == .sample {
+            guard let sqlite else { throw DatabaseError("먼저 연결해 주세요.") }
+            return try await sqlite.exportCSV(sql, to: destination, onProgress: onProgress)
+        }
+        guard connection.kind == .oracle else { throw DatabaseError("Full CSV export requires an Oracle or SQLite SELECT query.") }
+        return try await remoteSession(for: connection).exportCSV(sql, to: destination, onProgress: onProgress)
+    }
+
     func schema(for connection: DBConnection) async throws -> [SchemaTable] {
         if connection.kind == .sample {
             guard let sqlite else { throw DatabaseError("먼저 연결해 주세요.") }

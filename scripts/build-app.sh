@@ -55,6 +55,10 @@ TASK_MONGO_CLASSPATH="$TASK_ORACLE/classes:$TASK_ORACLE/bson.jar:$TASK_ORACLE/mo
 "$TASK_JAVA/bin/javac" -d "$TASK_ORACLE/classes" OracleBridge/OracleBridge.java
 TASK_CLASSPATH="$TASK_ORACLE/classes:$TASK_ORACLE/ojdbc11.jar:$TASK_ORACLE/orai18n.jar"
 "$TASK_JAVA/bin/java" -cp "$TASK_CLASSPATH" OracleBridge --self-test
+mkdir -p "$TASK_ORACLE/export-tests"
+"$TASK_JAVA/bin/javac" -cp "$TASK_ORACLE/classes" -d "$TASK_ORACLE/export-tests" Tests/OracleBridgeTests/OracleExportSelfTest.java Tests/OracleBridgeTests/OracleResultMetadataSelfTest.java
+"$TASK_JAVA/bin/java" -cp "$TASK_ORACLE/classes:$TASK_ORACLE/export-tests" OracleExportSelfTest
+"$TASK_JAVA/bin/java" -cp "$TASK_ORACLE/classes:$TASK_ORACLE/export-tests" OracleResultMetadataSelfTest
 if [ ! -x "$TASK_ORACLE/jre/bin/java" ] || ! "$TASK_ORACLE/jre/bin/java" --list-modules | grep -q '^jdk.charsets@'; then
     TASK_NEW_JRE="$TASK_ORACLE/jre-next"
     if [ -e "$TASK_NEW_JRE" ]; then

@@ -62,6 +62,9 @@ public actor SQLiteDatabase {
                     throw DatabaseError(String(cString: sqlite3_errmsg(db)))
                 }
                 result.columns = (0..<columnCount).map { String(cString: sqlite3_column_name(statement, Int32($0))) }
+                result.columnMetadata = (0..<columnCount).map { index in
+                    ResultColumnMetadata(type: sqlite3_column_decltype(statement, Int32(index)).map { String(cString: $0) })
+                }
                 result.rows = rows
                 result.truncated = truncated
             }
@@ -71,6 +74,59 @@ public actor SQLiteDatabase {
         result.elapsed = Date().timeIntervalSince(start)
         result.message = statements > 1 ? "\(statements) statements executed · last result shown" : "Query completed"
         return result
+    }
+
+    public func exportCSV(_ sql: String, to destination: URL, onProgress: QueryExportProgressHandler = { _ in }) throws -> QueryExportSummary {
+        guard let db = handle, let query = SQLStatementLocator.selectStatement(in: sql) else {
+            throw DatabaseError("Full export requires one SELECT query, including SELECT with a WITH clause.")
+        }
+        let start = Date()
+        var statement: OpaquePointer?
+        let prepared = sqlite3_prepare_v2(db, query.text, -1, &statement, nil)
+        guard prepared == SQLITE_OK, let statement else { throw DatabaseError(String(cString: sqlite3_errmsg(db))) }
+        defer { sqlite3_finalize(statement) }
+        guard sqlite3_stmt_readonly(statement) != 0, sqlite3_column_count(statement) > 0 else { throw DatabaseError("Only read-only SELECT results can be exported with a cursor.") }
+        let output = try AtomicQueryExport(destination: destination)
+        defer { output.discard() }
+        let writer = try CSVStreamWriter(url: output.temporary)
+        let count = Int(sqlite3_column_count(statement))
+        try writer.row((0..<count).map { String(cString: sqlite3_column_name(statement, Int32($0))) })
+        var rows = 0
+        var lastProgress = Date()
+        var status = sqlite3_step(statement)
+        while status == SQLITE_ROW {
+            try writer.row((0..<count).map { index in
+                let column = Int32(index)
+                switch sqlite3_column_type(statement, column) {
+                case SQLITE_NULL: return nil
+                case SQLITE_BLOB:
+                    let size = Int(sqlite3_column_bytes(statement, column))
+                    guard size > 0, let bytes = sqlite3_column_blob(statement, column) else { return "0x" }
+                    let digits = Array("0123456789ABCDEF".utf8)
+                    let source = UnsafeRawBufferPointer(start: bytes, count: size)
+                    var text = [UInt8](repeating: 0, count: size * 2 + 2)
+                    text[0] = 48; text[1] = 120
+                    for index in 0..<size {
+                        text[index * 2 + 2] = digits[Int(source[index] >> 4)]
+                        text[index * 2 + 3] = digits[Int(source[index] & 15)]
+                    }
+                    return String(decoding: text, as: UTF8.self)
+                default:
+                    guard let bytes = sqlite3_column_text(statement, column) else { return nil }
+                    return String(decoding: UnsafeBufferPointer(start: bytes, count: Int(sqlite3_column_bytes(statement, column))), as: UTF8.self)
+                }
+            })
+            rows += 1
+            if rows.isMultiple(of: 1000), Date().timeIntervalSince(lastProgress) >= 0.1 {
+                onProgress(rows); lastProgress = Date()
+            }
+            status = sqlite3_step(statement)
+        }
+        guard status == SQLITE_DONE else { throw DatabaseError(String(cString: sqlite3_errmsg(db))) }
+        try writer.close()
+        try output.finish()
+        onProgress(rows)
+        return QueryExportSummary(rows: rows, bytes: writer.bytes, elapsed: Date().timeIntervalSince(start))
     }
 
     public func schema() throws -> [SchemaTable] {

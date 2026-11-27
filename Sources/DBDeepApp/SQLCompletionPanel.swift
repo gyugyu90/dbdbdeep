@@ -109,6 +109,7 @@ private struct SQLCompletionList: View {
 }
 
 final class SQLCompletionTextView: NSTextView {
+    var findController: SQLTextFinder?
     var onDismissCompletion: (() -> Void)?
     var onRequestCompletion: (() -> Void)?
     var onTypeCompletion: (() -> Void)?
@@ -137,7 +138,45 @@ final class SQLCompletionTextView: NSTextView {
         super.scrollWheel(with: event)
     }
 
+    override func performKeyEquivalent(with event: NSEvent) -> Bool {
+        if handleLineEdit(event) { return true }
+        return super.performKeyEquivalent(with: CommandKeyboard.normalize(event))
+    }
+
+    private func handleLineEdit(_ event: NSEvent) -> Bool {
+        guard isEditable, window?.firstResponder === self else { return false }
+        let modifiers = event.modifierFlags.intersection([.command, .control, .option, .shift])
+        if modifiers == .command, ["/", "-"].contains(CommandKeyboard.character(in: event) ?? "") {
+            if !event.isARepeat { editLines(.toggleComment) }
+            return true
+        }
+        if event.keyCode == 48, modifiers == .shift {
+            editLines(.outdent)
+            return true
+        }
+        if event.keyCode == 48, modifiers.isEmpty, selectedRange().length > 0 {
+            editLines(.indent)
+            return true
+        }
+        return false
+    }
+
+    func editLines(_ action: SQLLineEdit.Action) {
+        guard isEditable else { return }
+        onDismissCompletion?()
+        if hasMarkedText() { unmarkText() }
+        guard let edit = SQLLineEdit.make(in: string, selection: selectedRange(), action: action),
+              (string as NSString).substring(with: edit.range) != edit.replacement else { return }
+        breakUndoCoalescing()
+        insertText(edit.replacement, replacementRange: edit.range)
+        setSelectedRange(edit.selection)
+        scrollRangeToVisible(edit.selection)
+        undoManager?.setActionName(action == .toggleComment ? "Toggle Line Comment" : action == .indent ? "Indent Lines" : "Outdent Lines")
+        breakUndoCoalescing()
+    }
+
     override func keyDown(with event: NSEvent) {
+        if handleLineEdit(event) { return }
         if event.keyCode == 49 && event.modifierFlags.intersection(.deviceIndependentFlagsMask) == .control {
             onRequestCompletion?()
             return
